@@ -47,11 +47,21 @@ To run live raid scoring through Rust instead of in-process JS fallback:
 npm run ml:sidecar
 ```
 
+Press Ctrl+C to stop the sidecar. The wrapper exits cleanly without Cargo STATUS_CONTROL_C_EXIT noise.
+
 2. Start the bot in Rust mode (no manual env export needed):
 
 ```bash
 npm run start:rust
 ```
+
+Single-command deployment (build sidecar, start sidecar, and start bot together):
+
+```bash
+npm run start:rust:all
+```
+
+Press Ctrl+C once to stop both processes.
 
 For watch mode:
 

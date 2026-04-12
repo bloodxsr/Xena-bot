@@ -17,6 +17,48 @@ function toReactionRouteToken(rawValue) {
   return raw;
 }
 
+function parseChannelIdInput(rawValue, parseSnowflake) {
+  const text = String(rawValue ?? "").trim();
+  const direct = parseSnowflake(text);
+  if (direct) {
+    return direct;
+  }
+
+  const mentionMatch = text.match(/^<#(\d{5,22})>$/);
+  if (mentionMatch) {
+    return mentionMatch[1];
+  }
+
+  return null;
+}
+
+function parseMessageTargetInput(rawValue, parseSnowflake) {
+  const text = String(rawValue ?? "").trim();
+  const directMessageId = parseSnowflake(text);
+
+  if (directMessageId) {
+    return {
+      guildId: null,
+      channelId: null,
+      messageId: directMessageId
+    };
+  }
+
+  const linkMatch = text.match(
+    /^https?:\/\/(?:www\.)?(?:fluxer\.app|discord\.com)\/channels\/(\d{5,22})\/(\d{5,22})\/(\d{5,22})(?:[/?#].*)?$/i
+  );
+
+  if (!linkMatch) {
+    return null;
+  }
+
+  return {
+    guildId: linkMatch[1],
+    channelId: linkMatch[2],
+    messageId: linkMatch[3]
+  };
+}
+
 function buildReactionCandidates(normalized, emojiRouteTokenFromNormalized) {
   const candidates = [];
   const seenStrings = new Set();
@@ -919,17 +961,35 @@ export function createModerationCommandHandlers({
       if (!guild) return;
 
       if (args.length < 4) {
-        await safeReply(message, "Usage: reactionroleadd <channel_id> <message_id> <emoji> <role>");
+        await safeReply(
+          message,
+          "Usage: reactionroleadd <channel_id|#channel> <message_id|message_link> <emoji> <role_name|@role>"
+        );
         return;
       }
 
-      const channelId = parseSnowflake(args[0]);
-      const messageId = parseSnowflake(args[1]);
+      const channelInput = args[0];
+      const messageInput = args[1];
       const emojiArg = args[2];
       const roleArg = args.slice(3).join(" ").trim();
+      const parsedMessageTarget = parseMessageTargetInput(messageInput, parseSnowflake);
+      const channelId = parseChannelIdInput(channelInput, parseSnowflake) || parsedMessageTarget?.channelId || null;
+      const messageId = parsedMessageTarget?.messageId || null;
 
-      if (!channelId || !messageId || !roleArg) {
-        await safeReply(message, "Invalid args. Need channel_id, message_id, emoji, role.");
+      if (
+        parsedMessageTarget?.guildId &&
+        parseSnowflake(parsedMessageTarget.guildId) &&
+        parseSnowflake(parsedMessageTarget.guildId) !== guild.id
+      ) {
+        await safeReply(message, "Message link must belong to this guild.");
+        return;
+      }
+
+      if (!channelId || !messageId || !emojiArg || !roleArg) {
+        await safeReply(
+          message,
+          "Invalid args. Need <channel_id|#channel> <message_id|message_link> <emoji> <role_name|@role>."
+        );
         return;
       }
 
@@ -1027,7 +1087,7 @@ export function createModerationCommandHandlers({
         }
       });
 
-      const targetMessageLink = `https://discord.com/channels/${guild.id}/${channelId}/${messageId}`;
+      const targetMessageLink = `https://fluxer.app/channels/${guild.id}/${channelId}/${messageId}`;
       await safeReply(
         message,
         [
@@ -1052,17 +1112,32 @@ export function createModerationCommandHandlers({
       if (!guild) return;
 
       if (args.length < 3) {
-        await safeReply(message, "Usage: reactionroleremove <channel_id> <message_id> <emoji> [role]");
+        await safeReply(
+          message,
+          "Usage: reactionroleremove <channel_id|#channel> <message_id|message_link> <emoji> [role_name|@role]"
+        );
         return;
       }
 
-      const channelId = parseSnowflake(args[0]);
-      const messageId = parseSnowflake(args[1]);
+      const channelInput = args[0];
+      const messageInput = args[1];
       const emojiArg = args[2];
       const roleArg = args.slice(3).join(" ").trim();
+      const parsedMessageTarget = parseMessageTargetInput(messageInput, parseSnowflake);
+      const channelId = parseChannelIdInput(channelInput, parseSnowflake) || parsedMessageTarget?.channelId || null;
+      const messageId = parsedMessageTarget?.messageId || null;
+
+      if (
+        parsedMessageTarget?.guildId &&
+        parseSnowflake(parsedMessageTarget.guildId) &&
+        parseSnowflake(parsedMessageTarget.guildId) !== guild.id
+      ) {
+        await safeReply(message, "Message link must belong to this guild.");
+        return;
+      }
 
       if (!channelId || !messageId) {
-        await safeReply(message, "channel_id and message_id must be valid snowflakes.");
+        await safeReply(message, "channel and message must be valid IDs or mentions/links.");
         return;
       }
 
@@ -1120,7 +1195,7 @@ export function createModerationCommandHandlers({
         }
       });
 
-      const targetMessageLink = `https://discord.com/channels/${guild.id}/${channelId}/${messageId}`;
+      const targetMessageLink = `https://fluxer.app/channels/${guild.id}/${channelId}/${messageId}`;
       await safeReply(
         message,
         [
@@ -1145,14 +1220,27 @@ export function createModerationCommandHandlers({
       if (!guild) return;
 
       if (args.length < 2) {
-        await safeReply(message, "Usage: reactionroleclear <channel_id> <message_id>");
+        await safeReply(message, "Usage: reactionroleclear <channel_id|#channel> <message_id|message_link>");
         return;
       }
 
-      const channelId = parseSnowflake(args[0]);
-      const messageId = parseSnowflake(args[1]);
+      const channelInput = args[0];
+      const messageInput = args[1];
+      const parsedMessageTarget = parseMessageTargetInput(messageInput, parseSnowflake);
+      const channelId = parseChannelIdInput(channelInput, parseSnowflake) || parsedMessageTarget?.channelId || null;
+      const messageId = parsedMessageTarget?.messageId || null;
+
+      if (
+        parsedMessageTarget?.guildId &&
+        parseSnowflake(parsedMessageTarget.guildId) &&
+        parseSnowflake(parsedMessageTarget.guildId) !== guild.id
+      ) {
+        await safeReply(message, "Message link must belong to this guild.");
+        return;
+      }
+
       if (!channelId || !messageId) {
-        await safeReply(message, "channel_id and message_id must be valid snowflakes.");
+        await safeReply(message, "channel and message must be valid IDs or mentions/links.");
         return;
       }
 
@@ -1170,7 +1258,7 @@ export function createModerationCommandHandlers({
         }
       });
 
-      const targetMessageLink = `https://discord.com/channels/${guild.id}/${channelId}/${messageId}`;
+      const targetMessageLink = `https://fluxer.app/channels/${guild.id}/${channelId}/${messageId}`;
       await safeReply(
         message,
         [
@@ -1206,7 +1294,7 @@ export function createModerationCommandHandlers({
       }
 
       const lines = rows.slice(0, 20).map((row) => {
-        const messageLink = `https://discord.com/channels/${guild.id}/${row.channel_id}/${row.message_id}`;
+        const messageLink = `https://fluxer.app/channels/${guild.id}/${row.channel_id}/${row.message_id}`;
         return `- ${row.emoji_display} -> <@&${row.role_id}> | channel <#${row.channel_id}> | message ${messageLink}`;
       });
 

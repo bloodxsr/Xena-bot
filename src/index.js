@@ -250,7 +250,7 @@ function normalizeRoleMentionIds(options = {}) {
 }
 
 function buildReplyContextLines(message, options = {}) {
-  if (options.includeContext === false) {
+  if (options.includeContext !== true) {
     return [];
   }
 
@@ -270,7 +270,7 @@ function buildReplyContextLines(message, options = {}) {
   }
 
   if (guildId && channelId && messageId) {
-    lines.push(`message: https://discord.com/channels/${guildId}/${channelId}/${messageId}`);
+    lines.push(`message: https://fluxer.app/channels/${guildId}/${channelId}/${messageId}`);
   } else if (messageId) {
     lines.push(`message_id: ${messageId}`);
   }

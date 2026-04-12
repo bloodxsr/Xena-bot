@@ -32,7 +32,7 @@ export function createUtilityCommandHandlers({
           "- totpsetup [rotate], totpauth <code>, totpstatus, totplogout",
           "- setverificationurl, setraidsettings, raidgate",
           "- pendingverifications, verifyjoin, rejectjoin, raidsnapshot",
-          "- reactionroleadd, reactionroleremove, reactionroleclear, reactionrolelist",
+          "- reactionroleadd <#channel> <message_link> <emoji> <role>, reactionroleremove, reactionroleclear, reactionrolelist",
           "- ask, joke"
         ].join("\n")
       );

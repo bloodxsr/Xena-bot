@@ -7,8 +7,10 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "start:rust": "node src/start-rust.js",
+    "start:rust:all": "node scripts/run-rust-stack.js",
     "dev:rust": "node --watch src/start-rust.js",
-    "ml:sidecar": "cargo run --manifest-path raid_ml_sidecar/Cargo.toml --release"
+    "ml:sidecar:build": "cargo build --manifest-path raid_ml_sidecar/Cargo.toml --release",
+    "ml:sidecar": "npm run ml:sidecar:build && node scripts/run-ml-sidecar.js"
   },
   "dependencies": {
     "@fluxerjs/core": "^1.3.0",
