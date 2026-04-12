@@ -1,0 +1,19 @@
+{
+  "name": "fluxer-bot-js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "start:rust": "node src/start-rust.js",
+    "dev:rust": "node --watch src/start-rust.js",
+    "ml:sidecar": "cargo run --manifest-path raid_ml_sidecar/Cargo.toml --release"
+  },
+  "dependencies": {
+    "@fluxerjs/core": "^1.3.0",
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "node-emoji": "^2.2.0"
+  }
+}
