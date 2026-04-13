@@ -79,6 +79,15 @@ function resolvePath(rawPath, fallbackAbsolutePath) {
   return path.resolve(projectRoot, text);
 }
 
+function normalizeUrl(rawValue, fallback) {
+  const text = String(rawValue || fallback).trim();
+  if (!text) {
+    return fallback;
+  }
+
+  return text.replace(/\/+$/, "");
+}
+
 function firstDefined(...values) {
   for (const value of values) {
     if (value != null && String(value).trim() !== "") {
@@ -89,22 +98,39 @@ function firstDefined(...values) {
 }
 
 export function loadConfig() {
+  const nodeEnv = String(process.env.NODE_ENV || "development")
+    .trim()
+    .toLowerCase();
+  const allowFileSecretFallback =
+    nodeEnv !== "production" && parseBoolean(process.env.ALLOW_FILE_SECRET_FALLBACK, true);
+  const tokenFilePath = path.join(projectRoot, "token.txt");
+  const googleFilePath = path.join(projectRoot, "google.txt");
+
   const token = firstDefined(
     process.env.FLUXER_BOT_TOKEN,
     process.env.BOT_TOKEN,
     process.env.TOKEN,
-    readTrimmed(path.join(projectRoot, "token.txt"))
+    allowFileSecretFallback ? readTrimmed(tokenFilePath) : null
   );
 
   if (!token) {
-    throw new Error("Missing bot token. Set FLUXER_BOT_TOKEN or create bot_js/token.txt.");
+    throw new Error(
+      nodeEnv === "production"
+        ? "Missing bot token. Set FLUXER_BOT_TOKEN in environment variables."
+        : "Missing bot token. Set FLUXER_BOT_TOKEN in .env or use bot_js/token.txt (development only)."
+    );
   }
 
   const googleApiKey = firstDefined(
     process.env.GOOGLE_API_KEY,
     process.env.GEMINI_API_KEY,
-    readTrimmed(path.join(projectRoot, "google.txt"))
+    allowFileSecretFallback ? readTrimmed(googleFilePath) : null
   );
+
+  const messageBaseUrl = normalizeUrl(process.env.FLUXER_WEB_BASE_URL, "https://fluxer.app");
+  const raidMlHost = String(process.env.RAID_ML_HOST || "127.0.0.1").trim() || "127.0.0.1";
+  const raidMlPort = clamp(parseInteger(process.env.RAID_ML_PORT, 8787), 1, 65535);
+  const raidMlServiceUrl = String(process.env.RAID_ML_SERVICE_URL || `http://${raidMlHost}:${raidMlPort}`).trim();
 
   const levelingMinXpPerMessage = clamp(parseInteger(process.env.LEVELING_XP_MIN, 8), 1, 100);
   const levelingMaxXpPerMessage = Math.max(
@@ -115,7 +141,12 @@ export function loadConfig() {
   return {
     projectRoot,
     repoRoot,
+    nodeEnv,
+    allowFileSecretFallback,
     botToken: token,
+    web: {
+      baseUrl: messageBaseUrl
+    },
     prefixes: parsePrefixes(process.env.BOT_PREFIXES),
     databasePath: resolvePath(process.env.DB_PATH, path.join(projectRoot, "data", "warnings.db")),
     wordsJsonPath: resolvePath(process.env.WORDS_JSON_PATH, path.join(projectRoot, "data", "words.json")),
@@ -145,7 +176,7 @@ export function loadConfig() {
     },
     raidMl: {
       backend: String(process.env.RAID_ML_BACKEND || "js").trim().toLowerCase() === "rust" ? "rust" : "js",
-      serviceUrl: String(process.env.RAID_ML_SERVICE_URL || "http://127.0.0.1:8787").trim(),
+      serviceUrl: raidMlServiceUrl,
       timeoutMs: clamp(parseInteger(process.env.RAID_ML_TIMEOUT_MS, 350), 50, 10000),
       maxConsecutiveFailures: clamp(parseInteger(process.env.RAID_ML_MAX_CONSECUTIVE_FAILURES, 4), 1, 50),
       circuitResetMs: clamp(parseInteger(process.env.RAID_ML_CIRCUIT_RESET_MS, 15000), 1000, 120000),

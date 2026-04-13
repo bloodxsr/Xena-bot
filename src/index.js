@@ -192,6 +192,42 @@ function randomIntegerInRange(min, max) {
   return lower + Math.floor(Math.random() * (upper - lower + 1));
 }
 
+function formatInteger(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return "0";
+  }
+
+  return Math.trunc(numeric).toLocaleString("en-US");
+}
+
+function buildProgressBar(current, total, size = 16) {
+  const normalizedTotal = Math.max(1, Number(total || 1));
+  const normalizedCurrent = Math.max(0, Math.min(Number(current || 0), normalizedTotal));
+  const filled = Math.round((normalizedCurrent / normalizedTotal) * size);
+  const clampedFilled = Math.max(0, Math.min(filled, size));
+  return `${"=".repeat(clampedFilled)}${".".repeat(size - clampedFilled)}`;
+}
+
+const NON_TOGGLEABLE_COMMANDS = new Set(["help", "helpmenu", "totpsetup", "totpauth", "totpstatus", "totplogout"]);
+
+function renderMessageTemplate(template, values = {}) {
+  const source = String(template || "");
+  if (!source.trim()) {
+    return "";
+  }
+
+  return source.replace(/\{([a-z0-9_.-]+)\}/gi, (full, token) => {
+    const key = String(token || "").toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(values, key)) {
+      return full;
+    }
+
+    const replacement = values[key];
+    return replacement == null ? "" : String(replacement);
+  });
+}
+
 const EMBED_COLORS = {
   info: 0x1f6feb,
   success: 0x2ea043,
@@ -270,7 +306,7 @@ function buildReplyContextLines(message, options = {}) {
   }
 
   if (guildId && channelId && messageId) {
-    lines.push(`message: https://fluxer.app/channels/${guildId}/${channelId}/${messageId}`);
+    lines.push(`message: ${config.web.baseUrl}/channels/${guildId}/${channelId}/${messageId}`);
   } else if (messageId) {
     lines.push(`message_id: ${messageId}`);
   }
@@ -349,12 +385,31 @@ async function resolveReplyChannel(message) {
   return null;
 }
 
+function scheduleMessageDeletion(sentMessage, deleteAfterMs) {
+  const delayMs = Math.floor(Number(deleteAfterMs || 0));
+  if (!sentMessage || typeof sentMessage.delete !== "function" || !Number.isFinite(delayMs) || delayMs <= 0) {
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    Promise.resolve(sentMessage.delete()).catch(() => {
+      // Best effort auto-delete.
+    });
+  }, delayMs);
+
+  if (timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
+}
+
 async function safeReply(message, content, options = {}) {
   const payload = appendContextToEmbedPayload(toReplyPayload(content, options), message, options);
+  const autoDeleteMs = options?.deleteAfterMs;
 
   try {
-    await message.reply(payload);
-    return;
+    const sentMessage = await message.reply(payload);
+    scheduleMessageDeletion(sentMessage, autoDeleteMs);
+    return sentMessage;
   } catch (error) {
     const unknownMessage = isUnknownMessageError(error);
     if (!unknownMessage) {
@@ -364,8 +419,9 @@ async function safeReply(message, content, options = {}) {
     const channel = await resolveReplyChannel(message);
     if (channel && typeof channel.send === "function") {
       try {
-        await channel.send(payload);
-        return;
+        const sentMessage = await channel.send(payload);
+        scheduleMessageDeletion(sentMessage, autoDeleteMs);
+        return sentMessage;
       } catch (sendError) {
         logError("channel send fallback failed", sendError);
       }
@@ -373,12 +429,16 @@ async function safeReply(message, content, options = {}) {
 
     if (!unknownMessage && typeof content === "string") {
       try {
-        await message.reply(truncateText(content, 1900));
+        const sentMessage = await message.reply(truncateText(content, 1900));
+        scheduleMessageDeletion(sentMessage, autoDeleteMs);
+        return sentMessage;
       } catch (fallbackError) {
         logError("reply fallback failed", fallbackError);
       }
     }
   }
+
+  return null;
 }
 
 async function resolveGuildFromMessage(message) {
@@ -440,12 +500,7 @@ async function isStaffMember(message) {
     return true;
   }
 
-  const guildConfig = db.getGuildConfig(guild.id);
-  const roleNames = memberRoleNames(member);
-  const adminRoleName = String(guildConfig.admin_role_name || "").trim().toLowerCase();
-  const modRoleName = String(guildConfig.mod_role_name || "").trim().toLowerCase();
-
-  return (adminRoleName && roleNames.has(adminRoleName)) || (modRoleName && roleNames.has(modRoleName));
+  return false;
 }
 
 const TOTP_PROTECTED_PERMISSIONS = new Set(
@@ -838,26 +893,37 @@ async function sendWelcomeForMember(member) {
     return;
   }
 
-  const lines = [
-    `Welcome ${formatUserMention(userId)}.`,
-    "Please review the server resources below."
-  ];
+  const resourceLines = [];
+  if (guildConfig.rules_channel_id) resourceLines.push(`Rules: <#${guildConfig.rules_channel_id}>`);
+  if (guildConfig.chat_channel_id) resourceLines.push(`Chat: <#${guildConfig.chat_channel_id}>`);
+  if (guildConfig.help_channel_id) resourceLines.push(`Help: <#${guildConfig.help_channel_id}>`);
+  if (guildConfig.about_channel_id) resourceLines.push(`About: <#${guildConfig.about_channel_id}>`);
+  if (guildConfig.perks_channel_id) resourceLines.push(`Perks: <#${guildConfig.perks_channel_id}>`);
 
-  if (guildConfig.rules_channel_id) lines.push(`Rules: <#${guildConfig.rules_channel_id}>`);
-  if (guildConfig.chat_channel_id) lines.push(`Chat: <#${guildConfig.chat_channel_id}>`);
-  if (guildConfig.help_channel_id) lines.push(`Help: <#${guildConfig.help_channel_id}>`);
-  if (guildConfig.about_channel_id) lines.push(`About: <#${guildConfig.about_channel_id}>`);
-  if (guildConfig.perks_channel_id) lines.push(`Perks: <#${guildConfig.perks_channel_id}>`);
+  const templateSource = String(guildConfig.welcome_message_template || "");
+  const renderedWelcome = renderMessageTemplate(templateSource, {
+    "user.mention": formatUserMention(userId),
+    "user.id": userId,
+    "user.name": String(member?.user?.username || member?.displayName || userId),
+    "guild.id": guildId,
+    "guild.name": String(member?.guild?.name || guildId),
+    "channels.rules": guildConfig.rules_channel_id ? `<#${guildConfig.rules_channel_id}>` : "-",
+    "channels.chat": guildConfig.chat_channel_id ? `<#${guildConfig.chat_channel_id}>` : "-",
+    "channels.help": guildConfig.help_channel_id ? `<#${guildConfig.help_channel_id}>` : "-",
+    "channels.about": guildConfig.about_channel_id ? `<#${guildConfig.about_channel_id}>` : "-",
+    "channels.perks": guildConfig.perks_channel_id ? `<#${guildConfig.perks_channel_id}>` : "-",
+    "channels.resources": resourceLines.join("\n")
+  }).trim();
+
+  const lines = [renderedWelcome || `Welcome ${formatUserMention(userId)} to ${String(member?.guild?.name || guildId)}.`];
+  if (!/\{channels\./i.test(templateSource) && resourceLines.length > 0) {
+    lines.push(...resourceLines);
+  }
 
   try {
     const channel = await client.channels.resolve(channelId);
     if (channel && typeof channel.send === "function") {
-      await channel.send(
-        buildEmbedPayload(lines.join("\n"), {
-          title: "Welcome",
-          kind: "success"
-        })
-      );
+      await channel.send(lines.join("\n"));
     }
   } catch (error) {
     logError("failed to send welcome message", error);
@@ -1362,20 +1428,29 @@ async function sendLevelUpAnnouncement(message, guildConfig, levelSnapshot) {
     return;
   }
 
+  const rank = db.getMemberLevelRank(levelSnapshot.guild_id || message.guildId, levelSnapshot.user_id);
+  const progressBar = buildProgressBar(levelSnapshot.progress_xp, levelSnapshot.progress_required, 18);
+  const xpToNext = Math.max(0, Number(levelSnapshot.progress_required || 0) - Number(levelSnapshot.progress_xp || 0));
+
+  const levelupText = renderMessageTemplate(guildConfig.levelup_message_template, {
+    "user.mention": formatUserMention(levelSnapshot.user_id),
+    "user.id": levelSnapshot.user_id,
+    "user.name": String(message.author?.username || levelSnapshot.user_id),
+    "guild.id": String(message.guildId || levelSnapshot.guild_id || ""),
+    "guild.name": String(message.guild?.name || ""),
+    level: String(levelSnapshot.level),
+    rank: String(rank),
+    "messages.count": formatInteger(levelSnapshot.message_count),
+    "xp.total": formatInteger(levelSnapshot.xp),
+    "xp.current": formatInteger(levelSnapshot.progress_xp),
+    "xp.required": formatInteger(levelSnapshot.progress_required),
+    "xp.to_next": formatInteger(xpToNext),
+    "progress.percent": String(levelSnapshot.progress_percent),
+    "progress.bar": progressBar
+  }).trim();
+
   try {
-    await channel.send(
-      buildEmbedPayload(
-        [
-          `${formatUserMention(levelSnapshot.user_id)} reached level ${levelSnapshot.level}.`,
-          `xp: ${levelSnapshot.xp}`,
-          `messages: ${levelSnapshot.message_count}`
-        ].join("\n"),
-        {
-          title: "Level Up",
-          kind: "success"
-        }
-      )
-    );
+    await channel.send(levelupText || `Level Up: ${formatUserMention(levelSnapshot.user_id)} reached level ${levelSnapshot.level}. Rank #${rank}.`);
   } catch (error) {
     logError("failed to send level up announcement", error);
   }
@@ -1457,13 +1532,26 @@ const commandHandlers = {
     getEffectiveGateState,
     sendWelcomeForMember,
     normalizeEmojiInput,
-    emojiRouteTokenFromNormalized
+    emojiRouteTokenFromNormalized,
+    messageBaseUrl: config.web.baseUrl
   })
 };
 async function executeCommand(parsed, message) {
   const handler = commandHandlers[parsed.command];
   if (!handler) {
     return;
+  }
+
+  const guildId = parseSnowflake(message?.guildId || message?.guild?.id);
+  if (guildId && !NON_TOGGLEABLE_COMMANDS.has(parsed.command)) {
+    const enabled = db.isCommandEnabled(guildId, parsed.command);
+    if (!enabled) {
+      await safeReply(message, `Command is disabled in this server: ${parsed.command}`, {
+        title: "Command Disabled",
+        kind: "warning"
+      });
+      return;
+    }
   }
 
   try {
@@ -1475,7 +1563,7 @@ async function executeCommand(parsed, message) {
     });
   } catch (error) {
     logError(`command failed: ${parsed.command}`, error);
-    await safeReply(message, `Command failed: ${String(error)}`);
+    await safeReply(message, "Command failed. Please try again later.");
   }
 }
 

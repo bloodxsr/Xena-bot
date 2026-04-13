@@ -7,6 +7,69 @@ import {
 } from "../utilities/totp.js";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const TOTP_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
+const TOTP_ATTEMPT_MAX_ATTEMPTS = 6;
+const TOTP_ATTEMPT_BLOCK_MS = 10 * 60 * 1000;
+const totpAttemptBuckets = new Map();
+
+function pruneTotpAttemptBuckets(nowMs) {
+  if (totpAttemptBuckets.size <= 5000) {
+    return;
+  }
+
+  for (const [key, bucket] of totpAttemptBuckets.entries()) {
+    if (nowMs >= bucket.windowUntil && (!bucket.blockedUntil || nowMs >= bucket.blockedUntil)) {
+      totpAttemptBuckets.delete(key);
+    }
+  }
+}
+
+function getTotpAttemptBucket(key) {
+  const nowMs = Date.now();
+  pruneTotpAttemptBuckets(nowMs);
+
+  const current = totpAttemptBuckets.get(key);
+  if (!current || nowMs >= current.windowUntil) {
+    const created = {
+      attempts: 0,
+      windowUntil: nowMs + TOTP_ATTEMPT_WINDOW_MS,
+      blockedUntil: 0
+    };
+    totpAttemptBuckets.set(key, created);
+    return created;
+  }
+
+  if (current.blockedUntil && nowMs >= current.blockedUntil) {
+    current.attempts = 0;
+    current.windowUntil = nowMs + TOTP_ATTEMPT_WINDOW_MS;
+    current.blockedUntil = 0;
+  }
+
+  return current;
+}
+
+function getTotpRetryAfterSeconds(key) {
+  const bucket = getTotpAttemptBucket(key);
+  const nowMs = Date.now();
+  if (bucket.blockedUntil && nowMs < bucket.blockedUntil) {
+    return Math.max(1, Math.ceil((bucket.blockedUntil - nowMs) / 1000));
+  }
+
+  return 0;
+}
+
+function registerTotpFailure(key) {
+  const bucket = getTotpAttemptBucket(key);
+  bucket.attempts += 1;
+
+  if (bucket.attempts >= TOTP_ATTEMPT_MAX_ATTEMPTS) {
+    bucket.blockedUntil = Date.now() + TOTP_ATTEMPT_BLOCK_MS;
+  }
+}
+
+function clearTotpFailures(key) {
+  totpAttemptBuckets.delete(key);
+}
 
 function buildTotpAuthorizationState(record, authWindowDays) {
   const result = {
@@ -358,6 +421,16 @@ export function createAdminCommandHandlers({
         return;
       }
 
+      const rateLimitKey = `${guild.id}:${userId}`;
+      const retryAfterSeconds = getTotpRetryAfterSeconds(rateLimitKey);
+      if (retryAfterSeconds > 0) {
+        await safeReply(message, `Too many invalid TOTP attempts. Retry in ${retryAfterSeconds}s.`, {
+          title: "TOTP",
+          kind: "warning"
+        });
+        return;
+      }
+
       const code = normalizeTotpCode(args[0]);
       if (!code) {
         await safeReply(message, "Usage: totpauth <6-digit-code>", { title: "TOTP", kind: "warning" });
@@ -378,12 +451,24 @@ export function createAdminCommandHandlers({
       });
 
       if (!valid) {
+        registerTotpFailure(rateLimitKey);
+        const nextRetryAfter = getTotpRetryAfterSeconds(rateLimitKey);
         await safeReply(message, "Invalid TOTP code. Check your authenticator app time and try again.", {
           title: "TOTP",
           kind: "error"
         });
+
+        if (nextRetryAfter > 0) {
+          await safeReply(message, `Too many invalid TOTP attempts. Retry in ${nextRetryAfter}s.`, {
+            title: "TOTP",
+            kind: "warning"
+          });
+        }
+
         return;
       }
+
+      clearTotpFailures(rateLimitKey);
 
       const updated = db.markStaffTotpVerified(guild.id, userId);
       const status = buildTotpAuthorizationState(updated, config.totp.authWindowDays);

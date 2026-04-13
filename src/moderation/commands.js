@@ -45,7 +45,7 @@ function parseMessageTargetInput(rawValue, parseSnowflake) {
   }
 
   const linkMatch = text.match(
-    /^https?:\/\/(?:www\.)?(?:fluxer\.app|discord\.com)\/channels\/(\d{5,22})\/(\d{5,22})\/(\d{5,22})(?:[/?#].*)?$/i
+    /^https?:\/\/(?:www\.)?[^/]+\/channels\/(\d{5,22})\/(\d{5,22})\/(\d{5,22})(?:[/?#].*)?$/i
   );
 
   if (!linkMatch) {
@@ -131,6 +131,8 @@ function buildReactionRouteTokens(normalized, emojiRouteTokenFromNormalized) {
   push(normalized?.key);
   return routeTokens;
 }
+
+const PURGE_FEEDBACK_AUTO_DELETE_MS = 5000;
 
 async function ensureReactionOnMessage({
   client,
@@ -253,8 +255,17 @@ export function createModerationCommandHandlers({
   getEffectiveGateState,
   sendWelcomeForMember,
   normalizeEmojiInput,
-  emojiRouteTokenFromNormalized
+  emojiRouteTokenFromNormalized,
+  messageBaseUrl
 }) {
+  const normalizedMessageBaseUrl = String(messageBaseUrl || "https://fluxer.app")
+    .trim()
+    .replace(/\/+$/, "");
+
+  const buildGuildMessageLink = (guildId, channelId, messageId) => {
+    return `${normalizedMessageBaseUrl}/channels/${guildId}/${channelId}/${messageId}`;
+  };
+
   return {
     async addbadword({ message, args }) {
       if (!(await requirePermission(message, PermissionFlags.ManageGuild))) {
@@ -336,7 +347,7 @@ export function createModerationCommandHandlers({
     },
 
     async purge({ message, args }) {
-      if (!(await requirePermission(message, PermissionFlags.ManageMessages))) {
+      if (!(await requirePermission(message, PermissionFlags.ManageMessages, undefined, { skipTotp: true }))) {
         return;
       }
 
@@ -377,10 +388,15 @@ export function createModerationCommandHandlers({
       try {
         rawMessages = await client.rest.get(`/channels/${targetChannelId}/messages?limit=${fetchLimit}`, { auth: true });
       } catch (error) {
-        await safeReply(message, `Failed to read channel messages: ${String(error)}`, {
+        await safeReply(message, "Failed to read channel messages.", {
           title: "Moderation",
           kind: "error"
         });
+
+        if (typeof console !== "undefined" && typeof console.error === "function") {
+          console.error("purge read channel messages failed", error);
+        }
+
         return;
       }
 
@@ -463,8 +479,17 @@ export function createModerationCommandHandlers({
 
       await safeReply(message, responseLines.join("\n"), {
         title: "Moderation",
-        kind: deletedCount < targetMessageIds.length ? "warning" : "success"
+        kind: deletedCount < targetMessageIds.length ? "warning" : "success",
+        deleteAfterMs: PURGE_FEEDBACK_AUTO_DELETE_MS
       });
+
+      if (typeof message.delete === "function") {
+        try {
+          await message.delete();
+        } catch {
+          // Best effort command cleanup.
+        }
+      }
     },
 
     async kick({ message, args }) {
@@ -1087,7 +1112,7 @@ export function createModerationCommandHandlers({
         }
       });
 
-      const targetMessageLink = `https://fluxer.app/channels/${guild.id}/${channelId}/${messageId}`;
+      const targetMessageLink = buildGuildMessageLink(guild.id, channelId, messageId);
       await safeReply(
         message,
         [
@@ -1195,7 +1220,7 @@ export function createModerationCommandHandlers({
         }
       });
 
-      const targetMessageLink = `https://fluxer.app/channels/${guild.id}/${channelId}/${messageId}`;
+      const targetMessageLink = buildGuildMessageLink(guild.id, channelId, messageId);
       await safeReply(
         message,
         [
@@ -1258,7 +1283,7 @@ export function createModerationCommandHandlers({
         }
       });
 
-      const targetMessageLink = `https://fluxer.app/channels/${guild.id}/${channelId}/${messageId}`;
+      const targetMessageLink = buildGuildMessageLink(guild.id, channelId, messageId);
       await safeReply(
         message,
         [
@@ -1294,7 +1319,7 @@ export function createModerationCommandHandlers({
       }
 
       const lines = rows.slice(0, 20).map((row) => {
-        const messageLink = `https://fluxer.app/channels/${guild.id}/${row.channel_id}/${row.message_id}`;
+        const messageLink = buildGuildMessageLink(guild.id, row.channel_id, row.message_id);
         return `- ${row.emoji_display} -> <@&${row.role_id}> | channel <#${row.channel_id}> | message ${messageLink}`;
       });
 

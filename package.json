@@ -6,6 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "dashboard:dev": "npm --prefix ../web_dashboard_ts run dev",
+    "dashboard:build": "npm --prefix ../web_dashboard_ts run build",
+    "dashboard:start": "npm --prefix ../web_dashboard_ts run start",
     "start:rust": "node src/start-rust.js",
     "start:rust:all": "node scripts/run-rust-stack.js",
     "dev:rust": "node --watch src/start-rust.js",
@@ -14,6 +17,7 @@
   },
   "dependencies": {
     "@fluxerjs/core": "^1.3.0",
+    "@napi-rs/canvas": "^0.1.97",
     "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.7",
     "node-emoji": "^2.2.0"

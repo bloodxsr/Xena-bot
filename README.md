@@ -8,16 +8,19 @@ This folder provides a runnable JS bot with core parity for:
 
 - Prefix command handling (`/` and `!` by default)
 - Moderation commands (`kick`, `ban`, `unban`, `mute`, `unmute`, `warnings`)
+- Server stats card commands (`serverstats`, `serverinfo`, `stats`)
+- Always-on leveling with image rank cards inspired by Mee6 (`rank`, `level`, `leaderboard`)
 - Security and join-gate flow (`setverificationurl`, `setraidsettings`, `raidgate`, `verifyjoin`, `rejectjoin`, `pendingverifications`, `raidsnapshot`)
 - Staff TOTP flow for privileged commands (`totpsetup`, `totpauth`, `totpstatus`, `totplogout`) with 30-day reauthorization window
 - Auto moderation for spam bursts, duplicate spam, mention/link spam, and automatic timeout actions
 - Reaction role mapping and live role assignment on reaction add or remove
 - Word blacklist loading and enforcement
 - Optional Gemini-backed `ask` and `joke`
+- Next.js dashboard (`web_dashboard_ts`) with Fluxer OAuth, shared-server control panel, command toggles, warning visibility, raid gate actions, and TOTP-gated protected writes
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and set `FLUXER_BOT_TOKEN` (or create `bot_js/token.txt`).
+1. Copy `.env.example` to `.env` and set `FLUXER_BOT_TOKEN`.
 2. Install dependencies:
 
 ```bash
@@ -30,9 +33,36 @@ npm install
 npm run start
 ```
 
+## Web Dashboard (Dyno-style Control Panel)
+
+From `bot_js`:
+
+1. Configure dashboard environment:
+
+```bash
+copy ..\web_dashboard_ts\.env.example ..\web_dashboard_ts\.env
+```
+
+2. Install dashboard dependencies:
+
+```bash
+npm --prefix ..\web_dashboard_ts install
+```
+
+3. Run dashboard:
+
+```bash
+npm run dashboard:dev
+```
+
+The dashboard is available at `http://localhost:3000` by default.
+
+For production and resale deployments, use PostgreSQL in `..\web_dashboard_ts\.env`.
+
 ## Notes
 
 - Fluxer.js guides currently recommend `intents: 0`.
+- In production, keep secrets in environment variables or a secret manager. Plaintext `token.txt` and `google.txt` fallbacks are intended for local development only.
 - SQLite defaults to `./data/warnings.db`.
 - Blacklist words are persisted in `data/words.json`.
 - For `reactionroleadd` and `reactionroleremove`, use the actual emoji character (example: `🫡`) or custom emoji format (`<:name:id>`), not text aliases like `:saluting_face:`.

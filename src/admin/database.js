@@ -60,6 +60,22 @@ function parseMetadata(value) {
   }
 }
 
+const DEFAULT_WELCOME_MESSAGE_TEMPLATE = "Welcome {user.mention} to {guild.name}.";
+const DEFAULT_LEVELUP_MESSAGE_TEMPLATE =
+  "Level Up: {user.mention} reached level {level}. Rank #{rank}.";
+
+function normalizeTemplateText(value, fallback) {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function normalizeCommandName(commandName) {
+  return String(commandName || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "");
+}
+
 function xpRequiredForNextLevel(level) {
   const normalized = Math.max(0, toInteger(level, 0));
   return 5 * normalized * normalized + 50 * normalized + 100;
@@ -154,6 +170,8 @@ export class BotDatabase {
         about_channel_id INTEGER,
         perks_channel_id INTEGER,
         leveling_channel_id INTEGER,
+        welcome_message_template TEXT,
+        levelup_message_template TEXT,
         admin_role_name TEXT NOT NULL DEFAULT 'Admin',
         mod_role_name TEXT NOT NULL DEFAULT 'Moderator',
         sync_mode TEXT NOT NULL DEFAULT 'global',
@@ -240,6 +258,14 @@ export class BotDatabase {
         PRIMARY KEY (guild_id, user_id)
       );
 
+      CREATE TABLE IF NOT EXISTS command_toggles (
+        guild_id INTEGER NOT NULL,
+        command_name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, command_name)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_verification_queue_pending
       ON verification_queue (guild_id, status, updated_at);
 
@@ -254,12 +280,27 @@ export class BotDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_staff_totp_last_verified
       ON staff_totp (guild_id, last_verified_at);
+
+      CREATE INDEX IF NOT EXISTS idx_command_toggles_lookup
+      ON command_toggles (guild_id, command_name, enabled);
     `);
 
     this.ensureTableColumn("guild_config", "leveling_enabled", "INTEGER NOT NULL DEFAULT 1");
     this.ensureTableColumn("guild_config", "leveling_channel_id", "INTEGER");
+    this.ensureTableColumn("guild_config", "welcome_message_template", "TEXT");
+    this.ensureTableColumn("guild_config", "levelup_message_template", "TEXT");
     this.db.exec("UPDATE guild_config SET leveling_enabled = 1 WHERE leveling_enabled IS NULL OR leveling_enabled != 1");
     this.db.exec("UPDATE guild_config SET raid_detection_enabled = 1 WHERE raid_detection_enabled IS NULL OR raid_detection_enabled != 1");
+    this.db
+      .prepare(
+        "UPDATE guild_config SET welcome_message_template = ? WHERE welcome_message_template IS NULL OR TRIM(welcome_message_template) = ''"
+      )
+      .run(DEFAULT_WELCOME_MESSAGE_TEMPLATE);
+    this.db
+      .prepare(
+        "UPDATE guild_config SET levelup_message_template = ? WHERE levelup_message_template IS NULL OR TRIM(levelup_message_template) = ''"
+      )
+      .run(DEFAULT_LEVELUP_MESSAGE_TEMPLATE);
   }
 
   ensureTableColumn(tableName, columnName, columnDefinition) {
@@ -298,6 +339,8 @@ export class BotDatabase {
       about_channel_id: toSnowflakeText(row.about_channel_id),
       perks_channel_id: toSnowflakeText(row.perks_channel_id),
       leveling_channel_id: toSnowflakeText(row.leveling_channel_id),
+      welcome_message_template: normalizeTemplateText(row.welcome_message_template, DEFAULT_WELCOME_MESSAGE_TEMPLATE),
+      levelup_message_template: normalizeTemplateText(row.levelup_message_template, DEFAULT_LEVELUP_MESSAGE_TEMPLATE),
       admin_role_name: String(row.admin_role_name || "Admin"),
       mod_role_name: String(row.mod_role_name || "Moderator"),
       sync_mode: String(row.sync_mode || "global"),
@@ -323,6 +366,8 @@ export class BotDatabase {
       "about_channel_id",
       "perks_channel_id",
       "leveling_channel_id",
+      "welcome_message_template",
+      "levelup_message_template",
       "admin_role_name",
       "mod_role_name",
       "sync_mode",
@@ -367,6 +412,16 @@ export class BotDatabase {
       if (key === "verification_url") {
         const value = String(rawValue ?? "").trim();
         normalized[key] = value === "" ? null : value;
+        continue;
+      }
+
+      if (key === "welcome_message_template") {
+        normalized[key] = normalizeTemplateText(rawValue, DEFAULT_WELCOME_MESSAGE_TEMPLATE);
+        continue;
+      }
+
+      if (key === "levelup_message_template") {
+        normalized[key] = normalizeTemplateText(rawValue, DEFAULT_LEVELUP_MESSAGE_TEMPLATE);
         continue;
       }
 
@@ -537,6 +592,115 @@ export class BotDatabase {
 
   resetWarnings(guildId, userId) {
     this.db.prepare("DELETE FROM warnings WHERE guild_id = ? AND user_id = ?").run(guildId, userId);
+  }
+
+  listWarningCounts(guildId, limit = 50) {
+    const normalizedLimit = Math.max(1, Math.min(toInteger(limit, 50), 200));
+    const rows = this.db
+      .prepare(
+        `
+          SELECT user_id, warning_count, updated_at
+          FROM warnings
+          WHERE guild_id = ?
+          ORDER BY warning_count DESC, updated_at DESC
+          LIMIT ?
+        `
+      )
+      .all(guildId, normalizedLimit);
+
+    return rows.map((row) => ({
+      user_id: toSnowflakeText(row.user_id),
+      warning_count: Math.max(0, toInteger(row.warning_count, 0)),
+      updated_at: String(row.updated_at || nowIso())
+    }));
+  }
+
+  listKnownGuildIds(limit = 1000) {
+    const normalizedLimit = Math.max(1, Math.min(toInteger(limit, 1000), 10000));
+    const rows = this.db
+      .prepare(
+        `
+          SELECT CAST(guild_id AS TEXT) AS guild_id
+          FROM guild_config
+          ORDER BY guild_id ASC
+          LIMIT ?
+        `
+      )
+      .all(normalizedLimit);
+
+    return rows.map((row) => toSnowflakeText(row.guild_id)).filter(Boolean);
+  }
+
+  isCommandEnabled(guildId, commandName) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    const normalizedCommand = normalizeCommandName(commandName);
+    if (!normalizedGuildId || !normalizedCommand) {
+      return true;
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT enabled
+          FROM command_toggles
+          WHERE guild_id = ? AND command_name = ?
+        `
+      )
+      .get(normalizedGuildId, normalizedCommand);
+
+    if (!row) {
+      return true;
+    }
+
+    return toBoolean(row.enabled);
+  }
+
+  setCommandEnabled(guildId, commandName, enabled) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    const normalizedCommand = normalizeCommandName(commandName);
+    if (!normalizedGuildId || !normalizedCommand) {
+      throw new Error("invalid guild id or command name");
+    }
+
+    const now = nowIso();
+    this.db
+      .prepare(
+        `
+          INSERT INTO command_toggles (guild_id, command_name, enabled, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(guild_id, command_name)
+          DO UPDATE SET
+            enabled = excluded.enabled,
+            updated_at = excluded.updated_at
+        `
+      )
+      .run(normalizedGuildId, normalizedCommand, enabled ? 1 : 0, now);
+
+    return this.isCommandEnabled(normalizedGuildId, normalizedCommand);
+  }
+
+  listCommandToggles(guildId) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    if (!normalizedGuildId) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT command_name, enabled, updated_at
+          FROM command_toggles
+          WHERE guild_id = ?
+          ORDER BY command_name ASC
+        `
+      )
+      .all(normalizedGuildId);
+
+    return rows.map((row) => ({
+      command_name: String(row.command_name || ""),
+      enabled: toBoolean(row.enabled),
+      updated_at: String(row.updated_at || nowIso())
+    }));
   }
 
   logModerationAction({
@@ -901,6 +1065,20 @@ export class BotDatabase {
       });
 
     return Math.max(1, toInteger(row?.ahead_count, 0) + 1);
+  }
+
+  getLevelMemberCount(guildId) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS total_count
+          FROM member_levels
+          WHERE guild_id = ?
+        `
+      )
+      .get(guildId);
+
+    return Math.max(0, toInteger(row?.total_count, 0));
   }
 
   listLevelLeaderboard(guildId, limit = 10, offset = 0) {
