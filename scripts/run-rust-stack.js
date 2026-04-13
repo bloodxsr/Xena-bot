@@ -8,6 +8,47 @@ const projectRoot = path.resolve(__dirname, "..");
 
 const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 const interruptExitCodes = new Set([130, 3221225786, -1073741510]);
+const SIDECAR_HEALTH_TIMEOUT_MS = 2000;
+
+function resolveSidecarServiceUrl() {
+  const configured = String(process.env.RAID_ML_SERVICE_URL || "").trim();
+  if (configured) {
+    return configured.replace(/\/+$/, "");
+  }
+
+  const host = String(process.env.RAID_ML_HOST || "127.0.0.1").trim() || "127.0.0.1";
+  const port = String(process.env.RAID_ML_PORT || "8787").trim() || "8787";
+  return `http://${host}:${port}`;
+}
+
+async function isSidecarHealthy(serviceUrl) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, SIDECAR_HEALTH_TIMEOUT_MS);
+
+  if (typeof timeout.unref === "function") {
+    timeout.unref();
+  }
+
+  try {
+    const response = await fetch(`${serviceUrl}/health`, {
+      method: "GET",
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      return false;
+    }
+
+    const body = await response.text();
+    return /"ok"\s*:\s*true/i.test(body);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function normalizeExitCode(code, signal) {
   if (signal === "SIGINT" || signal === "SIGTERM") {
@@ -62,10 +103,18 @@ async function start() {
     return;
   }
 
-  const sidecar = spawn(process.execPath, [path.resolve(projectRoot, "scripts", "run-ml-sidecar.js")], {
-    cwd: projectRoot,
-    stdio: "inherit"
-  });
+  const sidecarServiceUrl = resolveSidecarServiceUrl();
+  const reuseExistingSidecar = await isSidecarHealthy(sidecarServiceUrl);
+  if (reuseExistingSidecar) {
+    console.log(`rust stack: reusing running raid sidecar at ${sidecarServiceUrl}`);
+  }
+
+  const sidecar = reuseExistingSidecar
+    ? null
+    : spawn(process.execPath, [path.resolve(projectRoot, "scripts", "run-ml-sidecar.js")], {
+        cwd: projectRoot,
+        stdio: "inherit"
+      });
 
   const bot = spawn(process.execPath, [path.resolve(projectRoot, "src", "start-rust.js")], {
     cwd: projectRoot,
@@ -76,7 +125,7 @@ async function start() {
     shuttingDown: false,
     exitCode: 0,
     closed: {
-      sidecar: false,
+      sidecar: sidecar == null,
       bot: false
     }
   };
@@ -95,7 +144,9 @@ async function start() {
       }
 
       stopChild(bot, "SIGINT");
-      stopChild(sidecar, "SIGINT");
+      if (sidecar) {
+        stopChild(sidecar, "SIGINT");
+      }
     } else if (state.exitCode === 0) {
       state.exitCode = exitCode;
     }
@@ -111,29 +162,33 @@ async function start() {
     requestShutdown(0);
   });
 
-  sidecar.on("error", () => {
-    requestShutdown(1);
-  });
+  if (sidecar) {
+    sidecar.on("error", () => {
+      requestShutdown(1);
+    });
+  }
 
   bot.on("error", () => {
     requestShutdown(1);
   });
 
-  sidecar.on("close", (code, signal) => {
-    state.closed.sidecar = true;
-    const normalized = normalizeExitCode(code, signal);
+  if (sidecar) {
+    sidecar.on("close", (code, signal) => {
+      state.closed.sidecar = true;
+      const normalized = normalizeExitCode(code, signal);
 
-    if (!state.shuttingDown) {
-      requestShutdown(normalized);
-      return;
-    }
+      if (!state.shuttingDown) {
+        requestShutdown(normalized);
+        return;
+      }
 
-    if (normalized !== 0 && state.exitCode === 0) {
-      state.exitCode = normalized;
-    }
+      if (normalized !== 0 && state.exitCode === 0) {
+        state.exitCode = normalized;
+      }
 
-    finalizeIfDone();
-  });
+      finalizeIfDone();
+    });
+  }
 
   bot.on("close", (code, signal) => {
     state.closed.bot = true;

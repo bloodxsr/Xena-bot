@@ -16,10 +16,14 @@
     "ml:sidecar": "npm run ml:sidecar:build && node scripts/run-ml-sidecar.js"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
     "@fluxerjs/core": "^1.3.0",
+    "@fluxerjs/voice": "^1.3.0",
     "@napi-rs/canvas": "^0.1.97",
     "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.7",
-    "node-emoji": "^2.2.0"
+    "node-emoji": "^2.2.0",
+    "play-dl": "^1.9.7",
+    "yt-dlp-exec": "^1.0.2"
   }
 }

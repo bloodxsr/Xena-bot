@@ -8,8 +8,9 @@ This folder provides a runnable JS bot with core parity for:
 
 - Prefix command handling (`/` and `!` by default)
 - Moderation commands (`kick`, `ban`, `unban`, `mute`, `unmute`, `warnings`)
-- Server stats card commands (`serverstats`, `serverinfo`, `stats`)
+- Server stats card command (`stats`)
 - Always-on leveling with image rank cards inspired by Mee6 (`rank`, `level`, `leaderboard`)
+- Music queue and voice playback commands (`join`, `play`, `nowplaying`, `queue`, `pause`, `resume`, `skip`, `stop`, `leave`)
 - Security and join-gate flow (`setverificationurl`, `setraidsettings`, `raidgate`, `verifyjoin`, `rejectjoin`, `pendingverifications`, `raidsnapshot`)
 - Staff TOTP flow for privileged commands (`totpsetup`, `totpauth`, `totpstatus`, `totplogout`) with 30-day reauthorization window
 - Auto moderation for spam bursts, duplicate spam, mention/link spam, and automatic timeout actions
@@ -57,7 +58,16 @@ npm run dashboard:dev
 
 The dashboard is available at `http://localhost:3000` by default.
 
-For production and resale deployments, use PostgreSQL in `..\web_dashboard_ts\.env`.
+For current production deployments, use PostgreSQL in `..\web_dashboard_ts\.env`:
+
+- `DASHBOARD_DB_DRIVER=postgres`
+- `POSTGRES_HOST`
+- `POSTGRES_PORT`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `POSTGRES_DATABASE`
+
+SQLite remains optional for local/single-node setups (`DASHBOARD_DB_DRIVER=sqlite` + `BOT_DB_PATH=../bot_js/data/warnings.db`).
 
 ## Notes
 
@@ -66,6 +76,10 @@ For production and resale deployments, use PostgreSQL in `..\web_dashboard_ts\.e
 - SQLite defaults to `./data/warnings.db`.
 - Blacklist words are persisted in `data/words.json`.
 - For `reactionroleadd` and `reactionroleremove`, use the actual emoji character (example: `🫡`) or custom emoji format (`<:name:id>`), not text aliases like `:saluting_face:`.
+- `play` supports YouTube and SoundCloud track URLs, plus YouTube or SoundCloud playlists (playlist enqueues are capped per request).
+- Music playback defaults to the highest stream quality mode exposed by the streaming backend.
+- If YouTube playback fails with extractor errors (for example `ERR_INVALID_URL` from `play-dl`), set `PLAYDL_YOUTUBE_COOKIE` (browser cookie string) in `.env` and optionally `PLAYDL_USERAGENT`.
+- Runtime includes a final YouTube fallback via `yt-dlp` for environments where `play-dl`/`ytdl-core` extraction fails.
 
 ## Rust Raid ML Sidecar (Optional)
 

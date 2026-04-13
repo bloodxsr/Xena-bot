@@ -14,6 +14,7 @@ import { createModerationCommandHandlers } from "./moderation/commands.js";
 import { RaidMlClient } from "./moderation/raidMlClient.js";
 import { RaidRiskEngine, SpamRiskEngine, snowflakeToDate } from "./moderation/riskSignals.js";
 import { createUtilityCommandHandlers } from "./utilities/commands.js";
+import { createMusicRuntime } from "./utilities/music.js";
 import { WordStore } from "./moderation/words.js";
 
 const config = loadConfig();
@@ -34,6 +35,11 @@ function logInfo(...args) {
 function logError(...args) {
   console.error(new Date().toISOString(), "|", ...args);
 }
+
+const musicRuntime = createMusicRuntime({
+  client,
+  logError
+});
 
 const raidMlClient = new RaidMlClient(config.raidMl, logError);
 const raidMlHealthState = {
@@ -402,12 +408,85 @@ function scheduleMessageDeletion(sentMessage, deleteAfterMs) {
   }
 }
 
+function waitFor(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, Math.floor(Number(ms || 0))));
+  });
+}
+
+function getHttpStatusCode(error) {
+  const statusCode = Number(error?.statusCode || error?.status || 0);
+  return Number.isFinite(statusCode) ? statusCode : 0;
+}
+
+function normalizeRetryAfterMs(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 0;
+  }
+
+  // Retry-After is normally seconds; some clients expose milliseconds.
+  return numeric <= 60 ? Math.floor(numeric * 1000) : Math.floor(numeric);
+}
+
+function getRetryAfterMs(error) {
+  const fromField = normalizeRetryAfterMs(error?.retryAfter ?? error?.retry_after);
+  if (fromField > 0) {
+    return fromField;
+  }
+
+  const headers = error?.headers || error?.response?.headers;
+  if (!headers || typeof headers !== "object") {
+    return 0;
+  }
+
+  return normalizeRetryAfterMs(headers["retry-after"] ?? headers["Retry-After"]);
+}
+
+function isTransientSendError(error) {
+  const statusCode = getHttpStatusCode(error);
+  return statusCode === 429 || (statusCode >= 500 && statusCode <= 599);
+}
+
+function computeRetryDelayMs(error, attemptNumber) {
+  const exponentialBase = 300 * Math.pow(2, Math.max(0, Number(attemptNumber || 1) - 1));
+  const retryAfterMs = getRetryAfterMs(error);
+  const jitterMs = Math.floor(Math.random() * 120);
+  return Math.min(2500, Math.max(exponentialBase, retryAfterMs) + jitterMs);
+}
+
+async function sendWithRetry(sendFn, { label = "message send", maxAttempts = 2 } = {}) {
+  let attempt = 0;
+
+  while (attempt < maxAttempts) {
+    attempt += 1;
+
+    try {
+      return await sendFn();
+    } catch (error) {
+      if (!isTransientSendError(error) || attempt >= maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = computeRetryDelayMs(error, attempt);
+      const statusCode = getHttpStatusCode(error);
+      logInfo(`${label} transient failure (${statusCode || "unknown"}); retrying in ${delayMs}ms (${attempt + 1}/${maxAttempts})`);
+      await waitFor(delayMs);
+    }
+  }
+
+  return null;
+}
+
 async function safeReply(message, content, options = {}) {
   const payload = appendContextToEmbedPayload(toReplyPayload(content, options), message, options);
   const autoDeleteMs = options?.deleteAfterMs;
 
   try {
-    const sentMessage = await message.reply(payload);
+    const sentMessage = await sendWithRetry(() => message.reply(payload), {
+      label: "message.reply",
+      maxAttempts: 2
+    });
     scheduleMessageDeletion(sentMessage, autoDeleteMs);
     return sentMessage;
   } catch (error) {
@@ -419,7 +498,10 @@ async function safeReply(message, content, options = {}) {
     const channel = await resolveReplyChannel(message);
     if (channel && typeof channel.send === "function") {
       try {
-        const sentMessage = await channel.send(payload);
+        const sentMessage = await sendWithRetry(() => channel.send(payload), {
+          label: "channel.send",
+          maxAttempts: 2
+        });
         scheduleMessageDeletion(sentMessage, autoDeleteMs);
         return sentMessage;
       } catch (sendError) {
@@ -429,7 +511,10 @@ async function safeReply(message, content, options = {}) {
 
     if (!unknownMessage && typeof content === "string") {
       try {
-        const sentMessage = await message.reply(truncateText(content, 1900));
+        const sentMessage = await sendWithRetry(() => message.reply(truncateText(content, 1900)), {
+          label: "message.reply plain fallback",
+          maxAttempts: 2
+        });
         scheduleMessageDeletion(sentMessage, autoDeleteMs);
         return sentMessage;
       } catch (fallbackError) {
@@ -1504,7 +1589,8 @@ const commandHandlers = {
     db,
     resolveGuildFromMessage,
     parseUserIdArg,
-    formatUserMention
+    formatUserMention,
+    musicRuntime
   }),
   ...createAdminCommandHandlers({
     PermissionFlags,

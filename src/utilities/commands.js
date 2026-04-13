@@ -393,7 +393,8 @@ export function createUtilityCommandHandlers({
   db,
   resolveGuildFromMessage,
   parseUserIdArg,
-  formatUserMention
+  formatUserMention,
+  musicRuntime = null
 }) {
   const helpSections = {
     general: {
@@ -454,6 +455,21 @@ export function createUtilityCommandHandlers({
       summary: "XP, rank, and leaderboard commands.",
       commands: ["rank [user]", "level [user]", "leaderboard [page]"]
     },
+    music: {
+      title: "Music",
+      summary: "Voice channel music playback and queue controls.",
+      commands: [
+        "join",
+        "play <url|search|playlist_url>",
+        "nowplaying",
+        "queue",
+        "pause",
+        "resume",
+        "skip",
+        "stop",
+        "leave"
+      ]
+    },
     security: {
       title: "Security",
       summary: "Staff TOTP enrollment and authorization.",
@@ -466,7 +482,7 @@ export function createUtilityCommandHandlers({
     }
   };
 
-  const orderedHelpSections = ["general", "admin", "moderation", "reactionroles", "leveling", "security", "ai"];
+  const orderedHelpSections = ["general", "admin", "moderation", "reactionroles", "leveling", "music", "security", "ai"];
 
   const helpAliasToSection = {
     general: "general",
@@ -484,6 +500,9 @@ export function createUtilityCommandHandlers({
     leveling: "leveling",
     level: "leveling",
     xp: "leveling",
+    music: "music",
+    audio: "music",
+    songs: "music",
     security: "security",
     totp: "security",
     verification: "security",
@@ -518,6 +537,16 @@ export function createUtilityCommandHandlers({
   function formatHelpSection(sectionKey) {
     const section = helpSections[sectionKey];
     return [`${section.title} Commands`, "", ...section.commands.map((command) => `- ${command}`), "", "Tip: use /help to list all sections."].join("\n");
+  }
+
+  function formatMusicTrack(track, fallback = "Unknown track") {
+    if (!track || typeof track !== "object") {
+      return fallback;
+    }
+
+    const title = String(track.title || fallback).trim() || fallback;
+    const duration = String(track.durationText || "live").trim() || "live";
+    return `${title} (${duration})`;
   }
 
   const handlers = {
@@ -563,6 +592,296 @@ export function createUtilityCommandHandlers({
 
     async perks({ message }) {
       await safeReply(message, String(process.env.PERKS_TEXT || "No perks text configured."));
+    },
+
+    async join({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      try {
+        const joined = await musicRuntime.join({
+          guild,
+          userId: message.author.id
+        });
+
+        await safeReply(message, `Joined voice channel <#${joined.channelId}>.`);
+      } catch (error) {
+        await safeReply(message, `Music join failed: ${String(error?.message || error)}`);
+      }
+    },
+
+    async play({ message, args }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const query = args.join(" ").trim();
+      if (!query) {
+        await safeReply(message, "Usage: play <url or search terms>");
+        return;
+      }
+
+      try {
+        const result = await musicRuntime.enqueue({
+          guild,
+          userId: message.author.id,
+          query,
+          requestedByUserId: message.author.id
+        });
+
+        const firstTrack = result.firstTrack || null;
+        if (!firstTrack) {
+          await safeReply(message, "No playable tracks found.");
+          return;
+        }
+
+        const formattedTrack = formatMusicTrack(firstTrack);
+        const queuedCount = Math.max(1, Number(result.tracksQueued || 1));
+
+        if (queuedCount > 1) {
+          const sourceLabel = result.playlistTitle ? `${result.playlistTitle}` : "playlist";
+          if (result.startedNow) {
+            await safeReply(
+              message,
+              [
+                `Queued ${queuedCount} tracks from ${sourceLabel}.`,
+                `Now playing: ${formattedTrack}`,
+                `Source: ${firstTrack.displayUrl}`
+              ].join("\n")
+            );
+            return;
+          }
+
+          await safeReply(
+            message,
+            [
+              `Queued ${queuedCount} tracks from ${sourceLabel}.`,
+              `Next up: ${formattedTrack}`,
+              `Source: ${firstTrack.displayUrl}`
+            ].join("\n")
+          );
+          return;
+        }
+
+        if (result.startedNow) {
+          await safeReply(message, [`Now playing: ${formattedTrack}`, `Source: ${firstTrack.displayUrl}`].join("\n"));
+          return;
+        }
+
+        const queuedPosition = Math.max(1, Number(result.queueSize || 1));
+        await safeReply(
+          message,
+          [`Queued at position ${queuedPosition}: ${formattedTrack}`, `Source: ${firstTrack.displayUrl}`].join("\n")
+        );
+      } catch (error) {
+        await safeReply(message, `Music play failed: ${String(error?.message || error)}`);
+      }
+    },
+
+    async nowplaying({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const current = musicRuntime.getNowPlaying(guild.id);
+      if (!current) {
+        await safeReply(message, "Nothing is playing right now.");
+        return;
+      }
+
+      const requestedBy = current.requestedByUserId ? formatUserMention(current.requestedByUserId) : "Unknown";
+      const statusLabel = current.paused ? "Paused" : "Playing";
+      await safeReply(
+        message,
+        [
+          `${statusLabel}: ${formatMusicTrack(current)}`,
+          `Requested by: ${requestedBy}`,
+          `Source: ${current.displayUrl}`
+        ].join("\n")
+      );
+    },
+
+    async np(ctx) {
+      return handlers.nowplaying(ctx);
+    },
+
+    async queue({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const snapshot = musicRuntime.getQueueSnapshot(guild.id);
+      const lines = [];
+
+      if (snapshot.currentTrack) {
+        const statusLabel = snapshot.paused ? "paused" : "playing";
+        lines.push(`Now (${statusLabel}): ${formatMusicTrack(snapshot.currentTrack)}`);
+      }
+
+      if (!snapshot.currentTrack && snapshot.queue.length === 0) {
+        await safeReply(message, "Queue is empty.");
+        return;
+      }
+
+      if (snapshot.queue.length > 0) {
+        lines.push("", "Up next:");
+        for (let index = 0; index < Math.min(10, snapshot.queue.length); index += 1) {
+          lines.push(`${index + 1}. ${formatMusicTrack(snapshot.queue[index])}`);
+        }
+
+        if (snapshot.queue.length > 10) {
+          lines.push(`...and ${snapshot.queue.length - 10} more.`);
+        }
+      }
+
+      await safeReply(message, lines.join("\n"));
+    },
+
+    async skip({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const result = musicRuntime.skip(guild.id);
+      if (!result.skipped) {
+        await safeReply(message, "Nothing is playing right now.");
+        return;
+      }
+
+      await safeReply(
+        message,
+        `Skipped: ${formatMusicTrack(result.track)}${result.queueLength > 0 ? `\n${result.queueLength} track(s) remain in queue.` : ""}`
+      );
+    },
+
+    async pause({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const result = musicRuntime.pause(guild.id);
+      if (result.alreadyPaused) {
+        await safeReply(message, "Playback is already paused.");
+        return;
+      }
+
+      if (!result.paused) {
+        await safeReply(message, "Nothing is playing right now.");
+        return;
+      }
+
+      await safeReply(message, `Paused: ${formatMusicTrack(result.track)}`);
+    },
+
+    async resume({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const result = musicRuntime.resume(guild.id);
+      if (result.alreadyResumed) {
+        await safeReply(message, "Playback is already running.");
+        return;
+      }
+
+      if (!result.resumed) {
+        await safeReply(message, "Nothing is paused right now.");
+        return;
+      }
+
+      await safeReply(message, `Resumed: ${formatMusicTrack(result.track)}`);
+    },
+
+    async stop({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const result = musicRuntime.stop(guild.id);
+      if (!result.stopped) {
+        await safeReply(message, "Nothing is playing right now.");
+        return;
+      }
+
+      await safeReply(message, `Playback stopped. Cleared ${result.cleared} queued track(s).`);
+    },
+
+    async leave({ message }) {
+      if (!musicRuntime) {
+        await safeReply(message, "Music runtime is not available on this bot build.");
+        return;
+      }
+
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
+        return;
+      }
+
+      const left = musicRuntime.leave(guild.id);
+      if (!left) {
+        await safeReply(message, "I am not connected to a voice channel right now.");
+        return;
+      }
+
+      await safeReply(message, "Disconnected from voice channel and cleared queue.");
     },
 
     async stats({ message }) {
