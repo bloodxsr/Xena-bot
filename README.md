@@ -1,4 +1,4 @@
-# Fluxer Bot JS
+# Xena bot JS
 
 JavaScript runtime rewrite of the Python bot, using Fluxer.js.
 
