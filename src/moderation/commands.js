@@ -1007,358 +1007,64 @@ export function createModerationCommandHandlers({
       await safeReply(message, ["Recent join events:", ...lines].join("\n"));
     },
 
-    async reactionroleadd({ message, args }) {
+    async reactionroleadd({ message }) {
       if (!(await requirePermission(message, PermissionFlags.ManageRoles))) {
         return;
       }
 
-      const guild = await resolveGuildFromMessage(message);
-      if (!guild) return;
-
-      if (args.length < 4) {
-        await safeReply(
-          message,
-          "Usage: reactionroleadd <channel_id|#channel> <message_id|message_link> <emoji> <role_name|@role>"
-        );
-        return;
-      }
-
-      const channelInput = args[0];
-      const messageInput = args[1];
-      const emojiArg = args[2];
-      const roleArg = args.slice(3).join(" ").trim();
-      const parsedMessageTarget = parseMessageTargetInput(messageInput, parseSnowflake);
-      const channelId = parseChannelIdInput(channelInput, parseSnowflake) || parsedMessageTarget?.channelId || null;
-      const messageId = parsedMessageTarget?.messageId || null;
-
-      if (
-        parsedMessageTarget?.guildId &&
-        parseSnowflake(parsedMessageTarget.guildId) &&
-        parseSnowflake(parsedMessageTarget.guildId) !== guild.id
-      ) {
-        await safeReply(message, "Message link must belong to this guild.");
-        return;
-      }
-
-      if (!channelId || !messageId || !emojiArg || !roleArg) {
-        await safeReply(
-          message,
-          "Invalid args. Need <channel_id|#channel> <message_id|message_link> <emoji> <role_name|@role>."
-        );
-        return;
-      }
-
-      const roleId = await guild.resolveRoleId(roleArg);
-      if (!roleId) {
-        await safeReply(message, "Role not found.");
-        return;
-      }
-
-      let normalized;
-      try {
-        normalized = normalizeEmojiInput(emojiArg);
-      } catch (error) {
-        await safeReply(message, `Invalid emoji: ${String(error?.message || error)}`);
-        return;
-      }
-
-      let channel = null;
-      try {
-        channel = await client.channels.resolve(channelId);
-      } catch {
-        // Best effort.
-      }
-
-      if (!channel) {
-        await safeReply(message, "Channel not found.");
-        return;
-      }
-
-      let targetMessage = null;
-      try {
-        targetMessage = await channel?.messages?.fetch(messageId);
-      } catch {
-        // Best effort.
-      }
-
-      if (!targetMessage) {
-        await safeReply(message, "Target message not found in that channel.");
-        return;
-      }
-
-      const reactionResult = await ensureReactionOnMessage({
-        client,
-        channelId,
-        messageId,
-        targetMessage,
-        normalized,
-        emojiRouteTokenFromNormalized
-      });
-
-      if (!reactionResult.ok) {
-        db.logModerationAction({
-          guildId: guild.id,
-          action: "reaction_role_add_failed",
-          actorUserId: message.author.id,
-          reason: `emoji=${normalized.key} role_id=${roleId}`,
-          channelId,
-          messageId,
-          metadata: {
-            reaction_added: false,
-            reaction_error: reactionResult.error
-          }
-        });
-
-        await safeReply(message, `Failed to add reaction to that message: ${reactionResult.error}. Mapping was not saved.`, {
-          title: "Reaction Roles",
-          kind: "error",
-          roleId
-        });
-        return;
-      }
-
-      const created = db.addReactionRole({
-        guildId: guild.id,
-        channelId,
-        messageId,
-        emojiKey: normalized.key,
-        emojiDisplay: normalized.display,
-        roleId,
-        createdByUserId: message.author.id
-      });
-
-      db.logModerationAction({
-        guildId: guild.id,
-        action: "reaction_role_add",
-        actorUserId: message.author.id,
-        reason: `emoji=${normalized.key} role_id=${roleId}`,
-        channelId,
-        messageId,
-        metadata: {
-          created,
-          reaction_added: true,
-          reaction_method: reactionResult.method,
-          reaction_candidate: reactionResult.candidate
-        }
-      });
-
-      const targetMessageLink = buildGuildMessageLink(guild.id, channelId, messageId);
       await safeReply(
         message,
-        [
-          `Reaction role mapping ${created ? "created" : "already exists"}: ${normalized.display} -> <@&${roleId}>.`,
-          `target_channel: <#${channelId}>`,
-          `target_message: ${targetMessageLink}`
-        ].join("\n"),
+        "Reaction role mappings are now managed from the dashboard panel builder. Legacy chat commands are disabled.",
         {
           title: "Reaction Roles",
-          kind: created ? "success" : "info",
-          roleId
+          kind: "info"
         }
       );
     },
 
-    async reactionroleremove({ message, args }) {
+    async reactionroleremove({ message }) {
       if (!(await requirePermission(message, PermissionFlags.ManageRoles))) {
         return;
       }
 
-      const guild = await resolveGuildFromMessage(message);
-      if (!guild) return;
-
-      if (args.length < 3) {
-        await safeReply(
-          message,
-          "Usage: reactionroleremove <channel_id|#channel> <message_id|message_link> <emoji> [role_name|@role]"
-        );
-        return;
-      }
-
-      const channelInput = args[0];
-      const messageInput = args[1];
-      const emojiArg = args[2];
-      const roleArg = args.slice(3).join(" ").trim();
-      const parsedMessageTarget = parseMessageTargetInput(messageInput, parseSnowflake);
-      const channelId = parseChannelIdInput(channelInput, parseSnowflake) || parsedMessageTarget?.channelId || null;
-      const messageId = parsedMessageTarget?.messageId || null;
-
-      if (
-        parsedMessageTarget?.guildId &&
-        parseSnowflake(parsedMessageTarget.guildId) &&
-        parseSnowflake(parsedMessageTarget.guildId) !== guild.id
-      ) {
-        await safeReply(message, "Message link must belong to this guild.");
-        return;
-      }
-
-      if (!channelId || !messageId) {
-        await safeReply(message, "channel and message must be valid IDs or mentions/links.");
-        return;
-      }
-
-      let normalized;
-      try {
-        normalized = normalizeEmojiInput(emojiArg);
-      } catch (error) {
-        await safeReply(message, `Invalid emoji: ${String(error?.message || error)}`);
-        return;
-      }
-      let roleId = null;
-      if (roleArg) {
-        roleId = await guild.resolveRoleId(roleArg);
-        if (!roleId) {
-          await safeReply(message, "Role not found.");
-          return;
-        }
-      }
-
-      const deleted = db.removeReactionRole(guild.id, channelId, messageId, normalized.key, roleId);
-      const remaining = db.getReactionRoleIds(guild.id, channelId, messageId, normalized.key);
-
-      let reactionCleanup = null;
-
-      if (deleted > 0 && remaining.length === 0) {
-        try {
-          const channel = await client.channels.resolve(channelId);
-          const targetMessage = await channel?.messages?.fetch(messageId);
-          if (targetMessage) {
-            reactionCleanup = await ensureReactionRemovedFromMessage({
-              client,
-              channelId,
-              messageId,
-              targetMessage,
-              normalized,
-              emojiRouteTokenFromNormalized
-            });
-          }
-        } catch {
-          // Best effort cleanup.
-        }
-      }
-
-      db.logModerationAction({
-        guildId: guild.id,
-        action: "reaction_role_remove",
-        actorUserId: message.author.id,
-        reason: `emoji=${normalized.key}`,
-        channelId,
-        messageId,
-        metadata: {
-          role_id: roleId,
-          deleted,
-          reaction_cleanup: reactionCleanup
-        }
-      });
-
-      const targetMessageLink = buildGuildMessageLink(guild.id, channelId, messageId);
       await safeReply(
         message,
-        [
-          `Removed ${deleted} reaction role mapping(s).`,
-          `target_channel: <#${channelId}>`,
-          `target_message: ${targetMessageLink}`
-        ].join("\n"),
+        "Reaction role mappings are now managed from the dashboard panel builder. Legacy chat commands are disabled.",
         {
           title: "Reaction Roles",
-          kind: deleted > 0 ? "success" : "warning",
-          roleId
+          kind: "info"
         }
       );
     },
 
-    async reactionroleclear({ message, args }) {
+    async reactionroleclear({ message }) {
       if (!(await requirePermission(message, PermissionFlags.ManageRoles))) {
         return;
       }
 
-      const guild = await resolveGuildFromMessage(message);
-      if (!guild) return;
-
-      if (args.length < 2) {
-        await safeReply(message, "Usage: reactionroleclear <channel_id|#channel> <message_id|message_link>");
-        return;
-      }
-
-      const channelInput = args[0];
-      const messageInput = args[1];
-      const parsedMessageTarget = parseMessageTargetInput(messageInput, parseSnowflake);
-      const channelId = parseChannelIdInput(channelInput, parseSnowflake) || parsedMessageTarget?.channelId || null;
-      const messageId = parsedMessageTarget?.messageId || null;
-
-      if (
-        parsedMessageTarget?.guildId &&
-        parseSnowflake(parsedMessageTarget.guildId) &&
-        parseSnowflake(parsedMessageTarget.guildId) !== guild.id
-      ) {
-        await safeReply(message, "Message link must belong to this guild.");
-        return;
-      }
-
-      if (!channelId || !messageId) {
-        await safeReply(message, "channel and message must be valid IDs or mentions/links.");
-        return;
-      }
-
-      const deleted = db.clearReactionRolesForMessage(guild.id, channelId, messageId);
-
-      db.logModerationAction({
-        guildId: guild.id,
-        action: "reaction_role_clear",
-        actorUserId: message.author.id,
-        reason: `message_id=${messageId}`,
-        channelId,
-        messageId,
-        metadata: {
-          deleted
-        }
-      });
-
-      const targetMessageLink = buildGuildMessageLink(guild.id, channelId, messageId);
       await safeReply(
         message,
-        [
-          `Cleared ${deleted} mapping(s).`,
-          `target_channel: <#${channelId}>`,
-          `target_message: ${targetMessageLink}`
-        ].join("\n"),
+        "Reaction role mappings are now managed from the dashboard panel builder. Legacy chat commands are disabled.",
         {
           title: "Reaction Roles",
-          kind: deleted > 0 ? "success" : "warning"
+          kind: "info"
         }
       );
     },
 
-    async reactionrolelist({ message, args }) {
+    async reactionrolelist({ message }) {
       if (!(await requirePermission(message, PermissionFlags.ManageRoles))) {
         return;
       }
 
-      const guild = await resolveGuildFromMessage(message);
-      if (!guild) return;
-
-      const messageId = args[0] ? parseSnowflake(args[0]) : null;
-      if (args[0] && !messageId) {
-        await safeReply(message, "message_id must be a valid snowflake.");
-        return;
-      }
-
-      const rows = db.listReactionRoles(guild.id, messageId);
-      if (rows.length === 0) {
-        await safeReply(message, "No reaction role mappings found.");
-        return;
-      }
-
-      const lines = rows.slice(0, 20).map((row) => {
-        const messageLink = buildGuildMessageLink(guild.id, row.channel_id, row.message_id);
-        return `- ${row.emoji_display} -> <@&${row.role_id}> | channel <#${row.channel_id}> | message ${messageLink}`;
-      });
-
-      const suffix = rows.length > 20 ? `\n... and ${rows.length - 20} more` : "";
-      await safeReply(message, `Reaction role mappings:\n${lines.join("\n")}${suffix}`, {
-        title: "Reaction Roles",
-        kind: "info",
-        roleIds: rows.slice(0, 20).map((row) => row.role_id)
-      });
+      await safeReply(
+        message,
+        "Reaction role mappings are now managed from the dashboard panel builder. Legacy chat commands are disabled.",
+        {
+          title: "Reaction Roles",
+          kind: "info"
+        }
+      );
     }
   };
 }

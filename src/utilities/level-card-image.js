@@ -4,6 +4,49 @@ const WIDTH = 980;
 const HEIGHT = 320;
 const AVATAR_SIZE = 164;
 
+function normalizeHexColor(value, fallback) {
+  const text = String(value ?? "").trim();
+  if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(text)) {
+    return text.toLowerCase();
+  }
+
+  return fallback;
+}
+
+function colorWithAlpha(hexColor, alphaHex) {
+  const normalized = normalizeHexColor(hexColor, "#000000");
+  if (normalized.length === 4) {
+    const r = normalized[1];
+    const g = normalized[2];
+    const b = normalized[3];
+    return `#${r}${r}${g}${g}${b}${b}${alphaHex}`;
+  }
+
+  return `${normalized}${alphaHex}`;
+}
+
+function normalizeOpacity(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.min(numeric, 1));
+}
+
+function fontFamilyFromStyle(style) {
+  const key = String(style || "default").trim().toLowerCase();
+  if (key === "clean") {
+    return '"Segoe UI", "Inter", sans-serif';
+  }
+
+  if (key === "cyber") {
+    return '"Consolas", "Courier New", monospace';
+  }
+
+  return "sans-serif";
+}
+
 function clamp(value, min, max) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
@@ -43,6 +86,21 @@ function fillRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
   ctx.fillStyle = fillStyle;
   ctx.fill();
   ctx.restore();
+}
+
+function drawImageCover(ctx, image, width, height) {
+  const imageWidth = Number(image?.width || 0);
+  const imageHeight = Number(image?.height || 0);
+  if (!Number.isFinite(imageWidth) || !Number.isFinite(imageHeight) || imageWidth <= 0 || imageHeight <= 0) {
+    return;
+  }
+
+  const scale = Math.max(width / imageWidth, height / imageHeight);
+  const drawWidth = imageWidth * scale;
+  const drawHeight = imageHeight * scale;
+  const offsetX = (width - drawWidth) / 2;
+  const offsetY = (height - drawHeight) / 2;
+  ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
 }
 
 function initialsFromName(displayName) {
@@ -124,6 +182,11 @@ async function drawAvatar(ctx, avatarUrl, displayName) {
 export async function renderLevelCardImage(options) {
   const displayName = String(options.displayName || "Unknown User").trim() || "Unknown User";
   const avatarUrl = options.avatarUrl ? String(options.avatarUrl) : null;
+  const primaryColor = normalizeHexColor(options.primaryColor, "#66f2c4");
+  const accentColor = normalizeHexColor(options.accentColor, "#6da8ff");
+  const overlayOpacity = normalizeOpacity(options.overlayOpacity, 0.38);
+  const fontFamily = fontFamilyFromStyle(options.fontStyle);
+  const backgroundUrl = options.backgroundUrl ? String(options.backgroundUrl).trim() : "";
 
   const level = Math.max(0, Math.trunc(Number(options.level || 0)));
   const rank = Math.max(1, Math.trunc(Number(options.rank || 1)));
@@ -138,16 +201,31 @@ export async function renderLevelCardImage(options) {
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext("2d");
 
-  const backgroundGradient = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT);
-  backgroundGradient.addColorStop(0, "#0b1220");
-  backgroundGradient.addColorStop(0.55, "#111f36");
-  backgroundGradient.addColorStop(1, "#122a47");
-  ctx.fillStyle = backgroundGradient;
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  let customBackground = null;
+  if (backgroundUrl) {
+    try {
+      customBackground = await loadImage(backgroundUrl);
+    } catch {
+      customBackground = null;
+    }
+  }
+
+  if (customBackground) {
+    drawImageCover(ctx, customBackground, WIDTH, HEIGHT);
+    ctx.fillStyle = `rgba(6, 10, 20, ${overlayOpacity})`;
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  } else {
+    const backgroundGradient = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT);
+    backgroundGradient.addColorStop(0, "#0b1220");
+    backgroundGradient.addColorStop(0.55, "#111f36");
+    backgroundGradient.addColorStop(1, "#122a47");
+    ctx.fillStyle = backgroundGradient;
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  }
 
   const glowGradient = ctx.createRadialGradient(760, 40, 20, 760, 40, 320);
-  glowGradient.addColorStop(0, "rgba(59, 130, 246, 0.45)");
-  glowGradient.addColorStop(1, "rgba(59, 130, 246, 0)");
+  glowGradient.addColorStop(0, colorWithAlpha(accentColor, "88"));
+  glowGradient.addColorStop(1, colorWithAlpha(accentColor, "00"));
   ctx.fillStyle = glowGradient;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
@@ -156,11 +234,11 @@ export async function renderLevelCardImage(options) {
   await drawAvatar(ctx, avatarUrl, displayName);
 
   ctx.fillStyle = "#f8fafc";
-  ctx.font = "700 42px sans-serif";
+  ctx.font = `700 42px ${fontFamily}`;
   ctx.fillText(displayName.slice(0, 28), 240, 96);
 
-  ctx.fillStyle = "#93c5fd";
-  ctx.font = "600 20px sans-serif";
+  ctx.fillStyle = accentColor;
+  ctx.font = `600 20px ${fontFamily}`;
   ctx.fillText(`Rank #${rank}/${trackedMembers} | Level ${level}`, 240, 132);
 
   const progressTrackX = 240;
@@ -172,16 +250,16 @@ export async function renderLevelCardImage(options) {
 
   fillRoundedRect(ctx, progressTrackX, progressTrackY, progressTrackWidth, progressTrackHeight, 16, "rgba(148, 163, 184, 0.22)");
   const progressGradient = ctx.createLinearGradient(progressTrackX, 0, progressTrackX + progressTrackWidth, 0);
-  progressGradient.addColorStop(0, "#38bdf8");
-  progressGradient.addColorStop(1, "#22c55e");
+  progressGradient.addColorStop(0, accentColor);
+  progressGradient.addColorStop(1, primaryColor);
   fillRoundedRect(ctx, progressTrackX, progressTrackY, filledWidth, progressTrackHeight, 16, progressGradient);
 
   ctx.fillStyle = "#e2e8f0";
-  ctx.font = "600 17px sans-serif";
+  ctx.font = `600 17px ${fontFamily}`;
   ctx.fillText(`${progressPercent}% progress`, 240, 228);
 
   ctx.fillStyle = "#94a3b8";
-  ctx.font = "500 16px sans-serif";
+  ctx.font = `500 16px ${fontFamily}`;
   ctx.fillText(
     `XP ${formatInteger(progressXp)}/${formatInteger(progressRequired)} (${formatInteger(xpToNext)} to next level)`,
     240,

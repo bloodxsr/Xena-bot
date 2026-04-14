@@ -66,10 +66,32 @@ const DEFAULT_LEVELUP_MESSAGE_TEMPLATE =
 const DEFAULT_KICK_MESSAGE_TEMPLATE = "Kicked {user.mention}. Reason: {reason}.";
 const DEFAULT_BAN_MESSAGE_TEMPLATE = "Banned {user.mention}. Reason: {reason}.";
 const DEFAULT_MUTE_MESSAGE_TEMPLATE = "{user.mention} muted for {duration_minutes} minute(s). Reason: {reason}.";
+const DEFAULT_LEVEL_CARD_FONT = "default";
+const DEFAULT_LEVEL_CARD_PRIMARY_COLOR = "#66f2c4";
+const DEFAULT_LEVEL_CARD_ACCENT_COLOR = "#6da8ff";
+const DEFAULT_LEVEL_CARD_OVERLAY_OPACITY = 0.38;
+const DEFAULT_WELCOME_CARD_TITLE_TEMPLATE = "Welcome to {guild.name}";
+const DEFAULT_WELCOME_CARD_SUBTITLE_TEMPLATE = "You're member #{server.member_count}.";
+const DEFAULT_WELCOME_CARD_FONT = "default";
+const DEFAULT_WELCOME_CARD_PRIMARY_COLOR = "#f8fafc";
+const DEFAULT_WELCOME_CARD_ACCENT_COLOR = "#6dd6ff";
+const DEFAULT_WELCOME_CARD_OVERLAY_OPACITY = 0.48;
+const DEFAULT_TICKET_TRIGGER_EMOJI = "\u{1F3AB}";
+const DEFAULT_TICKET_WELCOME_TEMPLATE =
+  "Hello {user.mention}, thanks for opening a ticket. Our team will be with you soon.";
 
 function normalizeTemplateText(value, fallback) {
   const text = String(value ?? "").trim();
   return text || fallback;
+}
+
+function normalizeColor(value, fallback) {
+  const text = String(value ?? "").trim();
+  if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(text)) {
+    return text.toLowerCase();
+  }
+
+  return fallback;
 }
 
 function normalizeCommandName(commandName) {
@@ -178,6 +200,26 @@ export class BotDatabase {
         kick_message_template TEXT,
         ban_message_template TEXT,
         mute_message_template TEXT,
+        level_card_font TEXT NOT NULL DEFAULT 'default',
+        level_card_primary_color TEXT NOT NULL DEFAULT '#66f2c4',
+        level_card_accent_color TEXT NOT NULL DEFAULT '#6da8ff',
+        level_card_background_url TEXT,
+        level_card_overlay_opacity REAL NOT NULL DEFAULT 0.38,
+        welcome_card_enabled INTEGER NOT NULL DEFAULT 0,
+        welcome_card_title_template TEXT,
+        welcome_card_subtitle_template TEXT,
+        welcome_card_font TEXT NOT NULL DEFAULT 'default',
+        welcome_card_primary_color TEXT NOT NULL DEFAULT '#f8fafc',
+        welcome_card_accent_color TEXT NOT NULL DEFAULT '#6dd6ff',
+        welcome_card_background_url TEXT,
+        welcome_card_overlay_opacity REAL NOT NULL DEFAULT 0.48,
+        ticket_enabled INTEGER NOT NULL DEFAULT 0,
+        ticket_trigger_channel_id INTEGER,
+        ticket_trigger_message_id INTEGER,
+        ticket_trigger_emoji TEXT NOT NULL DEFAULT '\u{1F3AB}',
+        ticket_category_channel_id INTEGER,
+        ticket_support_role_id INTEGER,
+        ticket_welcome_template TEXT,
         admin_role_name TEXT NOT NULL DEFAULT 'Admin',
         mod_role_name TEXT NOT NULL DEFAULT 'Moderator',
         sync_mode TEXT NOT NULL DEFAULT 'global',
@@ -272,6 +314,17 @@ export class BotDatabase {
         PRIMARY KEY (guild_id, command_name)
       );
 
+      CREATE TABLE IF NOT EXISTS ticket_threads (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        trigger_channel_id INTEGER,
+        trigger_message_id INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_verification_queue_pending
       ON verification_queue (guild_id, status, updated_at);
 
@@ -289,6 +342,9 @@ export class BotDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_command_toggles_lookup
       ON command_toggles (guild_id, command_name, enabled);
+
+      CREATE INDEX IF NOT EXISTS idx_ticket_threads_channel_lookup
+      ON ticket_threads (guild_id, channel_id);
     `);
 
     this.ensureTableColumn("guild_config", "leveling_enabled", "INTEGER NOT NULL DEFAULT 1");
@@ -298,6 +354,26 @@ export class BotDatabase {
     this.ensureTableColumn("guild_config", "kick_message_template", "TEXT");
     this.ensureTableColumn("guild_config", "ban_message_template", "TEXT");
     this.ensureTableColumn("guild_config", "mute_message_template", "TEXT");
+    this.ensureTableColumn("guild_config", "level_card_font", "TEXT NOT NULL DEFAULT 'default'");
+    this.ensureTableColumn("guild_config", "level_card_primary_color", "TEXT NOT NULL DEFAULT '#66f2c4'");
+    this.ensureTableColumn("guild_config", "level_card_accent_color", "TEXT NOT NULL DEFAULT '#6da8ff'");
+    this.ensureTableColumn("guild_config", "level_card_background_url", "TEXT");
+    this.ensureTableColumn("guild_config", "level_card_overlay_opacity", "REAL NOT NULL DEFAULT 0.38");
+    this.ensureTableColumn("guild_config", "welcome_card_enabled", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureTableColumn("guild_config", "welcome_card_title_template", "TEXT");
+    this.ensureTableColumn("guild_config", "welcome_card_subtitle_template", "TEXT");
+    this.ensureTableColumn("guild_config", "welcome_card_font", "TEXT NOT NULL DEFAULT 'default'");
+    this.ensureTableColumn("guild_config", "welcome_card_primary_color", "TEXT NOT NULL DEFAULT '#f8fafc'");
+    this.ensureTableColumn("guild_config", "welcome_card_accent_color", "TEXT NOT NULL DEFAULT '#6dd6ff'");
+    this.ensureTableColumn("guild_config", "welcome_card_background_url", "TEXT");
+    this.ensureTableColumn("guild_config", "welcome_card_overlay_opacity", "REAL NOT NULL DEFAULT 0.48");
+    this.ensureTableColumn("guild_config", "ticket_enabled", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureTableColumn("guild_config", "ticket_trigger_channel_id", "INTEGER");
+    this.ensureTableColumn("guild_config", "ticket_trigger_message_id", "INTEGER");
+    this.ensureTableColumn("guild_config", "ticket_trigger_emoji", "TEXT NOT NULL DEFAULT '\u{1F3AB}'");
+    this.ensureTableColumn("guild_config", "ticket_category_channel_id", "INTEGER");
+    this.ensureTableColumn("guild_config", "ticket_support_role_id", "INTEGER");
+    this.ensureTableColumn("guild_config", "ticket_welcome_template", "TEXT");
     this.db.exec("UPDATE guild_config SET leveling_enabled = 1 WHERE leveling_enabled IS NULL OR leveling_enabled != 1");
     this.db.exec("UPDATE guild_config SET raid_detection_enabled = 1 WHERE raid_detection_enabled IS NULL OR raid_detection_enabled != 1");
     this.db
@@ -325,6 +401,26 @@ export class BotDatabase {
         "UPDATE guild_config SET mute_message_template = ? WHERE mute_message_template IS NULL OR TRIM(mute_message_template) = ''"
       )
       .run(DEFAULT_MUTE_MESSAGE_TEMPLATE);
+    this.db
+      .prepare(
+        "UPDATE guild_config SET welcome_card_title_template = ? WHERE welcome_card_title_template IS NULL OR TRIM(welcome_card_title_template) = ''"
+      )
+      .run(DEFAULT_WELCOME_CARD_TITLE_TEMPLATE);
+    this.db
+      .prepare(
+        "UPDATE guild_config SET welcome_card_subtitle_template = ? WHERE welcome_card_subtitle_template IS NULL OR TRIM(welcome_card_subtitle_template) = ''"
+      )
+      .run(DEFAULT_WELCOME_CARD_SUBTITLE_TEMPLATE);
+    this.db
+      .prepare(
+        "UPDATE guild_config SET ticket_trigger_emoji = ? WHERE ticket_trigger_emoji IS NULL OR TRIM(ticket_trigger_emoji) = ''"
+      )
+      .run(DEFAULT_TICKET_TRIGGER_EMOJI);
+    this.db
+      .prepare(
+        "UPDATE guild_config SET ticket_welcome_template = ? WHERE ticket_welcome_template IS NULL OR TRIM(ticket_welcome_template) = ''"
+      )
+      .run(DEFAULT_TICKET_WELCOME_TEMPLATE);
   }
 
   ensureTableColumn(tableName, columnName, columnDefinition) {
@@ -368,6 +464,42 @@ export class BotDatabase {
       kick_message_template: normalizeTemplateText(row.kick_message_template, DEFAULT_KICK_MESSAGE_TEMPLATE),
       ban_message_template: normalizeTemplateText(row.ban_message_template, DEFAULT_BAN_MESSAGE_TEMPLATE),
       mute_message_template: normalizeTemplateText(row.mute_message_template, DEFAULT_MUTE_MESSAGE_TEMPLATE),
+      level_card_font: String(row.level_card_font || DEFAULT_LEVEL_CARD_FONT),
+      level_card_primary_color: normalizeColor(row.level_card_primary_color, DEFAULT_LEVEL_CARD_PRIMARY_COLOR),
+      level_card_accent_color: normalizeColor(row.level_card_accent_color, DEFAULT_LEVEL_CARD_ACCENT_COLOR),
+      level_card_background_url: row.level_card_background_url == null ? null : String(row.level_card_background_url),
+      level_card_overlay_opacity: Math.max(
+        0,
+        Math.min(toFloat(row.level_card_overlay_opacity, DEFAULT_LEVEL_CARD_OVERLAY_OPACITY), 1)
+      ),
+      welcome_card_enabled: toBoolean(row.welcome_card_enabled),
+      welcome_card_title_template: normalizeTemplateText(
+        row.welcome_card_title_template,
+        DEFAULT_WELCOME_CARD_TITLE_TEMPLATE
+      ),
+      welcome_card_subtitle_template: normalizeTemplateText(
+        row.welcome_card_subtitle_template,
+        DEFAULT_WELCOME_CARD_SUBTITLE_TEMPLATE
+      ),
+      welcome_card_font: String(row.welcome_card_font || DEFAULT_WELCOME_CARD_FONT),
+      welcome_card_primary_color: normalizeColor(
+        row.welcome_card_primary_color,
+        DEFAULT_WELCOME_CARD_PRIMARY_COLOR
+      ),
+      welcome_card_accent_color: normalizeColor(row.welcome_card_accent_color, DEFAULT_WELCOME_CARD_ACCENT_COLOR),
+      welcome_card_background_url:
+        row.welcome_card_background_url == null ? null : String(row.welcome_card_background_url),
+      welcome_card_overlay_opacity: Math.max(
+        0,
+        Math.min(toFloat(row.welcome_card_overlay_opacity, DEFAULT_WELCOME_CARD_OVERLAY_OPACITY), 1)
+      ),
+      ticket_enabled: toBoolean(row.ticket_enabled),
+      ticket_trigger_channel_id: toSnowflakeText(row.ticket_trigger_channel_id),
+      ticket_trigger_message_id: toSnowflakeText(row.ticket_trigger_message_id),
+      ticket_trigger_emoji: String(row.ticket_trigger_emoji || DEFAULT_TICKET_TRIGGER_EMOJI),
+      ticket_category_channel_id: toSnowflakeText(row.ticket_category_channel_id),
+      ticket_support_role_id: toSnowflakeText(row.ticket_support_role_id),
+      ticket_welcome_template: normalizeTemplateText(row.ticket_welcome_template, DEFAULT_TICKET_WELCOME_TEMPLATE),
       admin_role_name: String(row.admin_role_name || "Admin"),
       mod_role_name: String(row.mod_role_name || "Moderator"),
       sync_mode: String(row.sync_mode || "global"),
@@ -398,6 +530,26 @@ export class BotDatabase {
       "kick_message_template",
       "ban_message_template",
       "mute_message_template",
+      "level_card_font",
+      "level_card_primary_color",
+      "level_card_accent_color",
+      "level_card_background_url",
+      "level_card_overlay_opacity",
+      "welcome_card_enabled",
+      "welcome_card_title_template",
+      "welcome_card_subtitle_template",
+      "welcome_card_font",
+      "welcome_card_primary_color",
+      "welcome_card_accent_color",
+      "welcome_card_background_url",
+      "welcome_card_overlay_opacity",
+      "ticket_enabled",
+      "ticket_trigger_channel_id",
+      "ticket_trigger_message_id",
+      "ticket_trigger_emoji",
+      "ticket_category_channel_id",
+      "ticket_support_role_id",
+      "ticket_welcome_template",
       "admin_role_name",
       "mod_role_name",
       "sync_mode",
@@ -420,6 +572,11 @@ export class BotDatabase {
     const normalized = {};
     for (const [key, rawValue] of entries) {
       if (key.endsWith("_channel_id") || key === "sync_guild_id") {
+        normalized[key] = toSnowflakeText(rawValue);
+        continue;
+      }
+
+      if (key === "ticket_trigger_message_id" || key === "ticket_support_role_id") {
         normalized[key] = toSnowflakeText(rawValue);
         continue;
       }
@@ -467,6 +624,80 @@ export class BotDatabase {
 
       if (key === "mute_message_template") {
         normalized[key] = normalizeTemplateText(rawValue, DEFAULT_MUTE_MESSAGE_TEMPLATE);
+        continue;
+      }
+
+      if (key === "welcome_card_title_template") {
+        normalized[key] = normalizeTemplateText(rawValue, DEFAULT_WELCOME_CARD_TITLE_TEMPLATE);
+        continue;
+      }
+
+      if (key === "welcome_card_subtitle_template") {
+        normalized[key] = normalizeTemplateText(rawValue, DEFAULT_WELCOME_CARD_SUBTITLE_TEMPLATE);
+        continue;
+      }
+
+      if (key === "ticket_welcome_template") {
+        normalized[key] = normalizeTemplateText(rawValue, DEFAULT_TICKET_WELCOME_TEMPLATE);
+        continue;
+      }
+
+      if (key === "level_card_font") {
+        const text = String(rawValue ?? "").trim().toLowerCase();
+        normalized[key] = text || DEFAULT_LEVEL_CARD_FONT;
+        continue;
+      }
+
+      if (key === "welcome_card_font") {
+        const text = String(rawValue ?? "").trim().toLowerCase();
+        normalized[key] = text || DEFAULT_WELCOME_CARD_FONT;
+        continue;
+      }
+
+      if (key === "level_card_primary_color") {
+        normalized[key] = normalizeColor(rawValue, DEFAULT_LEVEL_CARD_PRIMARY_COLOR);
+        continue;
+      }
+
+      if (key === "level_card_accent_color") {
+        normalized[key] = normalizeColor(rawValue, DEFAULT_LEVEL_CARD_ACCENT_COLOR);
+        continue;
+      }
+
+      if (key === "welcome_card_primary_color") {
+        normalized[key] = normalizeColor(rawValue, DEFAULT_WELCOME_CARD_PRIMARY_COLOR);
+        continue;
+      }
+
+      if (key === "welcome_card_accent_color") {
+        normalized[key] = normalizeColor(rawValue, DEFAULT_WELCOME_CARD_ACCENT_COLOR);
+        continue;
+      }
+
+      if (key === "level_card_background_url" || key === "welcome_card_background_url") {
+        const value = String(rawValue ?? "").trim();
+        normalized[key] = value === "" ? null : value;
+        continue;
+      }
+
+      if (key === "level_card_overlay_opacity") {
+        normalized[key] = Math.max(0, Math.min(toFloat(rawValue, DEFAULT_LEVEL_CARD_OVERLAY_OPACITY), 1));
+        continue;
+      }
+
+      if (key === "welcome_card_overlay_opacity") {
+        normalized[key] = Math.max(0, Math.min(toFloat(rawValue, DEFAULT_WELCOME_CARD_OVERLAY_OPACITY), 1));
+        continue;
+      }
+
+      if (key === "welcome_card_enabled" || key === "ticket_enabled") {
+        normalized[key] = toBoolean(rawValue) ? 1 : 0;
+        continue;
+      }
+
+      if (key === "ticket_trigger_emoji") {
+        const value = String(rawValue ?? "").trim();
+        normalized[key] = value || DEFAULT_TICKET_TRIGGER_EMOJI;
         continue;
       }
 
@@ -1162,6 +1393,147 @@ export class BotDatabase {
         progress_percent: progress.progressPercent
       };
     });
+  }
+
+  getOpenTicketForUser(guildId, userId) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    const normalizedUserId = toSnowflakeText(userId);
+    if (!normalizedGuildId || !normalizedUserId) {
+      return null;
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT guild_id, user_id, channel_id, trigger_channel_id, trigger_message_id, created_at, updated_at
+          FROM ticket_threads
+          WHERE guild_id = ? AND user_id = ?
+        `
+      )
+      .get(normalizedGuildId, normalizedUserId);
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      guild_id: toSnowflakeText(row.guild_id),
+      user_id: toSnowflakeText(row.user_id),
+      channel_id: toSnowflakeText(row.channel_id),
+      trigger_channel_id: toSnowflakeText(row.trigger_channel_id),
+      trigger_message_id: toSnowflakeText(row.trigger_message_id),
+      created_at: String(row.created_at || nowIso()),
+      updated_at: String(row.updated_at || nowIso())
+    };
+  }
+
+  getOpenTicketForChannel(guildId, channelId) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    const normalizedChannelId = toSnowflakeText(channelId);
+    if (!normalizedGuildId || !normalizedChannelId) {
+      return null;
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT guild_id, user_id, channel_id, trigger_channel_id, trigger_message_id, created_at, updated_at
+          FROM ticket_threads
+          WHERE guild_id = ? AND channel_id = ?
+        `
+      )
+      .get(normalizedGuildId, normalizedChannelId);
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      guild_id: toSnowflakeText(row.guild_id),
+      user_id: toSnowflakeText(row.user_id),
+      channel_id: toSnowflakeText(row.channel_id),
+      trigger_channel_id: toSnowflakeText(row.trigger_channel_id),
+      trigger_message_id: toSnowflakeText(row.trigger_message_id),
+      created_at: String(row.created_at || nowIso()),
+      updated_at: String(row.updated_at || nowIso())
+    };
+  }
+
+  setOpenTicket({ guildId, userId, channelId, triggerChannelId = null, triggerMessageId = null }) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    const normalizedUserId = toSnowflakeText(userId);
+    const normalizedChannelId = toSnowflakeText(channelId);
+    const normalizedTriggerChannelId = toSnowflakeText(triggerChannelId);
+    const normalizedTriggerMessageId = toSnowflakeText(triggerMessageId);
+
+    if (!normalizedGuildId || !normalizedUserId || !normalizedChannelId) {
+      throw new Error("invalid ticket thread payload");
+    }
+
+    const now = nowIso();
+    this.db
+      .prepare(
+        `
+          INSERT INTO ticket_threads (
+            guild_id, user_id, channel_id, trigger_channel_id, trigger_message_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(guild_id, user_id)
+          DO UPDATE SET
+            channel_id = excluded.channel_id,
+            trigger_channel_id = excluded.trigger_channel_id,
+            trigger_message_id = excluded.trigger_message_id,
+            updated_at = excluded.updated_at
+        `
+      )
+      .run(
+        normalizedGuildId,
+        normalizedUserId,
+        normalizedChannelId,
+        normalizedTriggerChannelId,
+        normalizedTriggerMessageId,
+        now,
+        now
+      );
+
+    return this.getOpenTicketForUser(normalizedGuildId, normalizedUserId);
+  }
+
+  clearOpenTicketForUser(guildId, userId) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    const normalizedUserId = toSnowflakeText(userId);
+    if (!normalizedGuildId || !normalizedUserId) {
+      return 0;
+    }
+
+    const result = this.db
+      .prepare(
+        `
+          DELETE FROM ticket_threads
+          WHERE guild_id = ? AND user_id = ?
+        `
+      )
+      .run(normalizedGuildId, normalizedUserId);
+
+    return result.changes;
+  }
+
+  clearOpenTicketForChannel(guildId, channelId) {
+    const normalizedGuildId = toSnowflakeText(guildId);
+    const normalizedChannelId = toSnowflakeText(channelId);
+    if (!normalizedGuildId || !normalizedChannelId) {
+      return 0;
+    }
+
+    const result = this.db
+      .prepare(
+        `
+          DELETE FROM ticket_threads
+          WHERE guild_id = ? AND channel_id = ?
+        `
+      )
+      .run(normalizedGuildId, normalizedChannelId);
+
+    return result.changes;
   }
 
   addReactionRole({

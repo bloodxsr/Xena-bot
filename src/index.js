@@ -15,6 +15,7 @@ import { RaidMlClient } from "./moderation/raidMlClient.js";
 import { RaidRiskEngine, SpamRiskEngine, snowflakeToDate } from "./moderation/riskSignals.js";
 import { createUtilityCommandHandlers } from "./utilities/commands.js";
 import { createMusicRuntime } from "./utilities/music.js";
+import { renderWelcomeCardImage } from "./utilities/welcome-card-image.js";
 import { WordStore } from "./moderation/words.js";
 
 const config = loadConfig();
@@ -216,6 +217,180 @@ function buildProgressBar(current, total, size = 16) {
 }
 
 const NON_TOGGLEABLE_COMMANDS = new Set(["help", "helpmenu", "totpsetup", "totpauth", "totpstatus", "totplogout"]);
+const WELCOME_CARD_IMAGE_FILE = "welcome-card.png";
+
+const TICKET_PERMISSION_BITS = {
+  viewChannel: 1024n,
+  sendMessages: 2048n,
+  embedLinks: 16384n,
+  attachFiles: 32768n,
+  readMessageHistory: 65536n
+};
+
+const TICKET_ALLOW_MASK =
+  TICKET_PERMISSION_BITS.viewChannel |
+  TICKET_PERMISSION_BITS.sendMessages |
+  TICKET_PERMISSION_BITS.embedLinks |
+  TICKET_PERMISSION_BITS.attachFiles |
+  TICKET_PERMISSION_BITS.readMessageHistory;
+
+function resolveAvatarUrl(userLike) {
+  if (!userLike || typeof userLike !== "object") {
+    return null;
+  }
+
+  try {
+    if (typeof userLike.displayAvatarURL === "function") {
+      return String(userLike.displayAvatarURL({ extension: "png", size: 256 }));
+    }
+  } catch {
+    // Best effort.
+  }
+
+  try {
+    if (typeof userLike.avatarURL === "function") {
+      return String(userLike.avatarURL({ extension: "png", size: 256 }));
+    }
+  } catch {
+    // Best effort.
+  }
+
+  if (typeof userLike.avatarUrl === "string" && userLike.avatarUrl.trim()) {
+    return userLike.avatarUrl.trim();
+  }
+
+  const userId = String(userLike.id || "").trim();
+  const avatarHash = String(userLike.avatar || "").trim();
+  if (userId && avatarHash) {
+    const extension = avatarHash.startsWith("a_") ? "gif" : "png";
+    return `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.${extension}?size=256`;
+  }
+
+  return null;
+}
+
+function sanitizeChannelNameFragment(value) {
+  const text = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-\s_]/g, "")
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  if (!text) {
+    return "member";
+  }
+
+  return text.slice(0, 30);
+}
+
+function buildTicketChannelName(member, userId) {
+  const sourceName =
+    member?.displayName ||
+    member?.nick ||
+    member?.user?.globalName ||
+    member?.user?.displayName ||
+    member?.user?.username ||
+    `user-${String(userId || "").slice(-4)}`;
+
+  const clean = sanitizeChannelNameFragment(sourceName);
+  const suffix = String(userId || "").slice(-4);
+  return suffix ? `ticket-${clean}-${suffix}` : `ticket-${clean}`;
+}
+
+function buildTicketPermissionOverwrites({ guildId, userId, supportRoleId }) {
+  const overwrites = [
+    {
+      id: guildId,
+      type: 0,
+      allow: "0",
+      deny: String(TICKET_PERMISSION_BITS.viewChannel)
+    },
+    {
+      id: userId,
+      type: 1,
+      allow: String(TICKET_ALLOW_MASK),
+      deny: "0"
+    }
+  ];
+
+  const roleId = parseSnowflake(supportRoleId);
+  if (roleId) {
+    overwrites.push({
+      id: roleId,
+      type: 0,
+      allow: String(TICKET_ALLOW_MASK),
+      deny: "0"
+    });
+  }
+
+  return overwrites;
+}
+
+function emojiMatchesStoredTrigger(storedEmoji, gatewayEmoji) {
+  const configured = String(storedEmoji || "").trim();
+  if (!configured) {
+    return false;
+  }
+
+  let normalized = null;
+  try {
+    normalized = normalizeEmojiInput(configured);
+  } catch {
+    return false;
+  }
+
+  const candidates = emojiKeyCandidatesFromGatewayEmoji(gatewayEmoji);
+  if (candidates.length === 0) {
+    return false;
+  }
+
+  const expected = new Set([String(normalized.key || "").trim(), String(normalized.display || "").trim()]);
+  if (Array.isArray(normalized.aliases)) {
+    for (const alias of normalized.aliases) {
+      expected.add(String(alias || "").trim());
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (expected.has(String(candidate || "").trim())) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function createTicketChannel({ guild, guildId, name, parentId, topic, permissionOverwrites }) {
+  if (guild?.channels && typeof guild.channels.create === "function") {
+    try {
+      const created = await guild.channels.create({
+        name,
+        type: 0,
+        parentId: parentId || undefined,
+        topic,
+        permissionOverwrites
+      });
+
+      if (created?.id) {
+        return created;
+      }
+    } catch {
+      // Fall back to direct REST create.
+    }
+  }
+
+  const body = {
+    name,
+    type: 0,
+    topic,
+    permission_overwrites: Array.isArray(permissionOverwrites) ? permissionOverwrites : undefined,
+    parent_id: parentId || undefined
+  };
+
+  return client.rest.post(`/guilds/${guildId}/channels`, { auth: true, body });
+}
 
 function renderMessageTemplate(template, values = {}) {
   const source = String(template || "");
@@ -978,6 +1153,28 @@ async function sendWelcomeForMember(member) {
     return;
   }
 
+  const memberCountCandidate = [
+    Number(member?.guild?.memberCount),
+    Number(member?.guild?.member_count),
+    Number(member?.guild?.approximate_member_count)
+  ].find((entry) => Number.isFinite(entry) && entry > 0);
+  const memberCount = Math.max(0, Number.isFinite(memberCountCandidate) ? memberCountCandidate : 0);
+  const guildName = String(member?.guild?.name || guildId);
+
+  const templateValues = {
+    "user.mention": formatUserMention(userId),
+    "user.id": userId,
+    "user.name": String(member?.user?.username || member?.displayName || userId),
+    "guild.id": guildId,
+    "guild.name": guildName,
+    "server.member_count": formatInteger(memberCount),
+    "channels.rules": guildConfig.rules_channel_id ? `<#${guildConfig.rules_channel_id}>` : "-",
+    "channels.chat": guildConfig.chat_channel_id ? `<#${guildConfig.chat_channel_id}>` : "-",
+    "channels.help": guildConfig.help_channel_id ? `<#${guildConfig.help_channel_id}>` : "-",
+    "channels.about": guildConfig.about_channel_id ? `<#${guildConfig.about_channel_id}>` : "-",
+    "channels.perks": guildConfig.perks_channel_id ? `<#${guildConfig.perks_channel_id}>` : "-"
+  };
+
   const resourceLines = [];
   if (guildConfig.rules_channel_id) resourceLines.push(`Rules: <#${guildConfig.rules_channel_id}>`);
   if (guildConfig.chat_channel_id) resourceLines.push(`Chat: <#${guildConfig.chat_channel_id}>`);
@@ -985,30 +1182,59 @@ async function sendWelcomeForMember(member) {
   if (guildConfig.about_channel_id) resourceLines.push(`About: <#${guildConfig.about_channel_id}>`);
   if (guildConfig.perks_channel_id) resourceLines.push(`Perks: <#${guildConfig.perks_channel_id}>`);
 
-  const templateSource = String(guildConfig.welcome_message_template || "");
-  const renderedWelcome = renderMessageTemplate(templateSource, {
-    "user.mention": formatUserMention(userId),
-    "user.id": userId,
-    "user.name": String(member?.user?.username || member?.displayName || userId),
-    "guild.id": guildId,
-    "guild.name": String(member?.guild?.name || guildId),
-    "channels.rules": guildConfig.rules_channel_id ? `<#${guildConfig.rules_channel_id}>` : "-",
-    "channels.chat": guildConfig.chat_channel_id ? `<#${guildConfig.chat_channel_id}>` : "-",
-    "channels.help": guildConfig.help_channel_id ? `<#${guildConfig.help_channel_id}>` : "-",
-    "channels.about": guildConfig.about_channel_id ? `<#${guildConfig.about_channel_id}>` : "-",
-    "channels.perks": guildConfig.perks_channel_id ? `<#${guildConfig.perks_channel_id}>` : "-",
-    "channels.resources": resourceLines.join("\n")
-  }).trim();
+  templateValues["channels.resources"] = resourceLines.join("\n");
 
-  const lines = [renderedWelcome || `Welcome ${formatUserMention(userId)} to ${String(member?.guild?.name || guildId)}.`];
+  const templateSource = String(guildConfig.welcome_message_template || "");
+  const renderedWelcome = renderMessageTemplate(templateSource, templateValues).trim();
+
+  const lines = [renderedWelcome || `Welcome ${formatUserMention(userId)} to ${guildName}.`];
   if (!/\{channels\./i.test(templateSource) && resourceLines.length > 0) {
     lines.push(...resourceLines);
+  }
+
+  let welcomePayload = lines.join("\n");
+
+  if (guildConfig.welcome_card_enabled) {
+    const titleTemplate = String(guildConfig.welcome_card_title_template || "");
+    const subtitleTemplate = String(guildConfig.welcome_card_subtitle_template || "");
+    const titleText = renderMessageTemplate(titleTemplate, templateValues).trim() || `Welcome to ${guildName}`;
+    const subtitleText =
+      renderMessageTemplate(subtitleTemplate, templateValues).trim() ||
+      `${String(member?.user?.username || member?.displayName || "Member")} joined the server.`;
+
+    try {
+      const imageData = await renderWelcomeCardImage({
+        guildName,
+        displayName: String(member?.displayName || member?.user?.username || "Member"),
+        avatarUrl: resolveAvatarUrl(member?.user || member),
+        memberCount,
+        titleText,
+        subtitleText,
+        primaryColor: guildConfig.welcome_card_primary_color,
+        accentColor: guildConfig.welcome_card_accent_color,
+        overlayOpacity: guildConfig.welcome_card_overlay_opacity,
+        backgroundUrl: guildConfig.welcome_card_background_url,
+        fontStyle: guildConfig.welcome_card_font
+      });
+
+      welcomePayload = {
+        content: lines.join("\n"),
+        files: [
+          {
+            name: WELCOME_CARD_IMAGE_FILE,
+            data: imageData
+          }
+        ]
+      };
+    } catch (error) {
+      logError("failed to render welcome card image", error);
+    }
   }
 
   try {
     const channel = await client.channels.resolve(channelId);
     if (channel && typeof channel.send === "function") {
-      await channel.send(lines.join("\n"));
+      await channel.send(welcomePayload);
     }
   } catch (error) {
     logError("failed to send welcome message", error);
@@ -1122,6 +1348,198 @@ async function handleMemberJoin(member) {
 
   if (!action.startsWith("gated")) {
     await sendWelcomeForMember(member);
+  }
+}
+
+async function sendTicketTriggerNotice(channelId, messageText) {
+  if (!channelId || !messageText) {
+    return;
+  }
+
+  try {
+    const channel = await client.channels.resolve(channelId);
+    if (channel && typeof channel.send === "function") {
+      await channel.send(String(messageText));
+    }
+  } catch {
+    // Best effort notification.
+  }
+}
+
+async function handleReactionTicketCreate(reaction, user, messageId, channelId, emoji, userId) {
+  const guildId = parseSnowflake(reaction?.guildId || reaction?.guild_id || reaction?.message?.guildId || reaction?.message?.guild_id);
+  const resolvedUserId = parseSnowflake(userId || user?.id || reaction?.userId || reaction?.user_id || reaction?.user?.id);
+  const resolvedChannelId = parseSnowflake(
+    channelId || reaction?.channelId || reaction?.channel_id || reaction?.message?.channelId || reaction?.message?.channel_id
+  );
+  const resolvedMessageId = parseSnowflake(messageId || reaction?.messageId || reaction?.message_id || reaction?.message?.id);
+
+  if (!guildId || !resolvedUserId || !resolvedChannelId || !resolvedMessageId) {
+    return;
+  }
+
+  if (client.user?.id && resolvedUserId === client.user.id) {
+    return;
+  }
+
+  const guildConfig = db.getGuildConfig(guildId);
+  if (!guildConfig.ticket_enabled) {
+    return;
+  }
+
+  if (!guildConfig.ticket_trigger_channel_id || !guildConfig.ticket_trigger_message_id) {
+    return;
+  }
+
+  if (guildConfig.ticket_trigger_channel_id !== resolvedChannelId) {
+    return;
+  }
+
+  if (guildConfig.ticket_trigger_message_id !== resolvedMessageId) {
+    return;
+  }
+
+  if (!emojiMatchesStoredTrigger(guildConfig.ticket_trigger_emoji, emoji || reaction?.emoji)) {
+    return;
+  }
+
+  let guild = null;
+  try {
+    guild = client.guilds.get(guildId) || (await client.guilds.resolve(guildId));
+  } catch {
+    guild = null;
+  }
+
+  if (!guild) {
+    return;
+  }
+
+  const member = await resolveGuildMember(guild, resolvedUserId);
+  if (!member || member.user?.bot) {
+    return;
+  }
+
+  const existingTicket = db.getOpenTicketForUser(guildId, resolvedUserId);
+  if (existingTicket?.channel_id) {
+    let existingChannel = null;
+    try {
+      existingChannel = await client.channels.resolve(existingTicket.channel_id);
+    } catch {
+      existingChannel = null;
+    }
+
+    if (existingChannel) {
+      await sendTicketTriggerNotice(
+        resolvedChannelId,
+        `${formatUserMention(resolvedUserId)} you already have an open ticket: <#${existingTicket.channel_id}>.`
+      );
+      return;
+    }
+
+    db.clearOpenTicketForUser(guildId, resolvedUserId);
+  }
+
+  const ticketChannelName = buildTicketChannelName(member, resolvedUserId);
+  const supportRoleId = parseSnowflake(guildConfig.ticket_support_role_id);
+  const parentId = parseSnowflake(guildConfig.ticket_category_channel_id);
+  const permissionOverwrites = buildTicketPermissionOverwrites({
+    guildId,
+    userId: resolvedUserId,
+    supportRoleId
+  });
+  const topic = sanitizeReason(
+    `Support ticket for ${resolvedUserId}. Trigger message ${resolvedMessageId}.`,
+    250
+  );
+
+  try {
+    const created = await createTicketChannel({
+      guild,
+      guildId,
+      name: ticketChannelName,
+      parentId,
+      topic,
+      permissionOverwrites
+    });
+
+    const createdChannelId = parseSnowflake(created?.id);
+    if (!createdChannelId) {
+      throw new Error("ticket channel creation returned no channel id");
+    }
+
+    db.setOpenTicket({
+      guildId,
+      userId: resolvedUserId,
+      channelId: createdChannelId,
+      triggerChannelId: resolvedChannelId,
+      triggerMessageId: resolvedMessageId
+    });
+
+    const ticketTemplateValues = {
+      "user.mention": formatUserMention(resolvedUserId),
+      "user.id": resolvedUserId,
+      "user.name": String(member.displayName || member.user?.username || resolvedUserId),
+      "guild.id": guildId,
+      "guild.name": String(guild.name || guildId),
+      "ticket.channel": `<#${createdChannelId}>`,
+      "ticket.support_role": supportRoleId ? `<@&${supportRoleId}>` : ""
+    };
+
+    const ticketMessage =
+      renderMessageTemplate(guildConfig.ticket_welcome_template, ticketTemplateValues).trim() ||
+      `Hello ${formatUserMention(resolvedUserId)}. Thanks for opening a ticket. Our team will be with you soon.`;
+
+    let ticketChannel = null;
+    try {
+      ticketChannel = await client.channels.resolve(createdChannelId);
+    } catch {
+      ticketChannel = null;
+    }
+
+    if (ticketChannel && typeof ticketChannel.send === "function") {
+      await ticketChannel.send(ticketMessage);
+    }
+
+    await sendTicketTriggerNotice(
+      resolvedChannelId,
+      `${formatUserMention(resolvedUserId)} ticket created: <#${createdChannelId}>.`
+    );
+
+    db.logModerationAction({
+      guildId,
+      action: "ticket_create",
+      actorUserId: client.user?.id ?? null,
+      targetUserId: resolvedUserId,
+      reason: `trigger=${resolvedMessageId} emoji=${guildConfig.ticket_trigger_emoji}`,
+      channelId: createdChannelId,
+      messageId: resolvedMessageId,
+      metadata: {
+        trigger_channel_id: resolvedChannelId,
+        ticket_channel_id: createdChannelId,
+        support_role_id: supportRoleId,
+        category_channel_id: parentId
+      }
+    });
+  } catch (error) {
+    db.logModerationAction({
+      guildId,
+      action: "ticket_create_failed",
+      actorUserId: client.user?.id ?? null,
+      targetUserId: resolvedUserId,
+      reason: `trigger=${resolvedMessageId}`,
+      channelId: resolvedChannelId,
+      messageId: resolvedMessageId,
+      metadata: {
+        error: String(error),
+        ticket_trigger_emoji: guildConfig.ticket_trigger_emoji
+      }
+    });
+
+    await sendTicketTriggerNotice(
+      resolvedChannelId,
+      `${formatUserMention(resolvedUserId)} ticket creation failed. Please contact staff manually.`
+    );
+    logError("failed creating ticket channel", error);
   }
 }
 
@@ -1689,6 +2107,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user, messageId, channelId
   try {
     const resolvedUserId = userId || user?.id || null;
     await applyReactionRole(reaction, emoji, resolvedUserId, channelId, messageId, false);
+    await handleReactionTicketCreate(reaction, user, messageId, channelId, emoji, resolvedUserId);
   } catch (error) {
     logError("reaction add handler failed", error);
   }

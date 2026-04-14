@@ -10,6 +10,22 @@ function formatInteger(value) {
   return Math.trunc(numeric).toLocaleString("en-US");
 }
 
+function colorHexToInt(value, fallback) {
+  const text = String(value ?? "").trim();
+  if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(text)) {
+    return fallback;
+  }
+
+  if (text.length === 4) {
+    const r = text[1];
+    const g = text[2];
+    const b = text[3];
+    return Number.parseInt(`${r}${r}${g}${g}${b}${b}`, 16);
+  }
+
+  return Number.parseInt(text.slice(1), 16);
+}
+
 function progressBar(current, total, size = 16) {
   const normalizedTotal = Math.max(1, Number(total || 1));
   const normalizedCurrent = Math.max(0, Math.min(Number(current || 0), normalizedTotal));
@@ -130,7 +146,8 @@ function buildLevelCardPayload({
   progressRequired,
   progressPercent,
   totalXp,
-  messageCount
+  messageCount,
+  embedColor
 }) {
   const xpToNext = Math.max(0, Number(progressRequired || 0) - Number(progressXp || 0));
   const progress = progressBar(progressXp, progressRequired, 18);
@@ -141,7 +158,7 @@ function buildLevelCardPayload({
       {
         title: "Level Card",
         description: [mention, `Rank #${rank}${rankSuffix} | Level ${level}`].join("\n"),
-        color: 0x1f6feb,
+        color: colorHexToInt(embedColor, 0x1f6feb),
         fields: [
           {
             name: "Progress",
@@ -187,7 +204,8 @@ async function tryBuildLevelCardImagePayload({
   progressXp,
   progressRequired,
   totalXp,
-  messageCount
+  messageCount,
+  levelCardStyle
 }) {
   try {
     const imageData = await renderLevelCardImage({
@@ -199,7 +217,12 @@ async function tryBuildLevelCardImagePayload({
       progressXp,
       progressRequired,
       totalXp,
-      messageCount
+      messageCount,
+      primaryColor: levelCardStyle?.primaryColor,
+      accentColor: levelCardStyle?.accentColor,
+      overlayOpacity: levelCardStyle?.overlayOpacity,
+      backgroundUrl: levelCardStyle?.backgroundUrl,
+      fontStyle: levelCardStyle?.fontStyle
     });
 
     return {
@@ -207,7 +230,7 @@ async function tryBuildLevelCardImagePayload({
         {
           title: "Level Card",
           description: `${mention} | rank #${rank}/${trackedMembers}`,
-          color: 0x1f6feb,
+          color: colorHexToInt(levelCardStyle?.accentColor, 0x1f6feb),
           image: {
             url: `attachment://${LEVEL_CARD_IMAGE_FILE}`
           },
@@ -442,12 +465,9 @@ export function createUtilityCommandHandlers({
     },
     reactionroles: {
       title: "Reaction Roles",
-      summary: "Map reactions to role assignment.",
+      summary: "Dashboard-managed panel workflow.",
       commands: [
-        "reactionroleadd <#channel|channel_id> <message_link|message_id> <emoji> <role>",
-        "reactionroleremove <#channel|channel_id> <message_link|message_id> <emoji> [role]",
-        "reactionroleclear <#channel|channel_id> <message_link|message_id>",
-        "reactionrolelist [message_id]"
+        "Use dashboard reaction-role panel builder (legacy reactionrole* chat commands are disabled)."
       ]
     },
     leveling: {
@@ -974,6 +994,8 @@ export function createUtilityCommandHandlers({
         return;
       }
 
+      const guildConfig = db.getGuildConfig(guild.id);
+
       const targetUserId = parseUserIdArg(args[0]) || message.author.id;
       const snapshot = db.getMemberLevel(guild.id, targetUserId);
       const rank = db.getMemberLevelRank(guild.id, targetUserId);
@@ -1014,7 +1036,14 @@ export function createUtilityCommandHandlers({
         progressXp: snapshot.progress_xp,
         progressRequired: snapshot.progress_required,
         totalXp: snapshot.xp,
-        messageCount: snapshot.message_count
+        messageCount: snapshot.message_count,
+        levelCardStyle: {
+          primaryColor: guildConfig.level_card_primary_color,
+          accentColor: guildConfig.level_card_accent_color,
+          overlayOpacity: guildConfig.level_card_overlay_opacity,
+          backgroundUrl: guildConfig.level_card_background_url,
+          fontStyle: guildConfig.level_card_font
+        }
       });
 
       if (imagePayload) {
@@ -1033,7 +1062,8 @@ export function createUtilityCommandHandlers({
           progressRequired: snapshot.progress_required,
           progressPercent: snapshot.progress_percent,
           totalXp: snapshot.xp,
-          messageCount: snapshot.message_count
+          messageCount: snapshot.message_count,
+          embedColor: guildConfig.level_card_accent_color
         })
       );
     },
