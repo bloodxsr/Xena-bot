@@ -254,6 +254,7 @@ export function createModerationCommandHandlers({
   toIsoSeconds,
   getEffectiveGateState,
   sendWelcomeForMember,
+  renderMessageTemplate,
   normalizeEmojiInput,
   emojiRouteTokenFromNormalized,
   messageBaseUrl
@@ -509,6 +510,15 @@ export function createModerationCommandHandlers({
       const reason = sanitizeReason(args.slice(1).join(" ") || "No reason provided");
       await guild.kick(userId, { reason });
 
+      const guildConfig = db.getGuildConfig(guild.id);
+      const kickText = renderMessageTemplate(guildConfig.kick_message_template, {
+        "user.mention": formatUserMention(userId),
+        "user.id": userId,
+        "guild.id": guild.id,
+        "guild.name": String(guild.name || guild.id),
+        reason
+      }).trim();
+
       db.logModerationAction({
         guildId: guild.id,
         action: "kick",
@@ -519,7 +529,7 @@ export function createModerationCommandHandlers({
         messageId: message.id
       });
 
-      await safeReply(message, `Kicked ${formatUserMention(userId)}.`);
+      await safeReply(message, kickText || `Kicked ${formatUserMention(userId)}.`);
     },
 
     async ban({ message, args }) {
@@ -539,6 +549,15 @@ export function createModerationCommandHandlers({
       const reason = sanitizeReason(args.slice(1).join(" ") || "No reason provided");
       await guild.ban(userId, { reason });
 
+      const guildConfig = db.getGuildConfig(guild.id);
+      const banText = renderMessageTemplate(guildConfig.ban_message_template, {
+        "user.mention": formatUserMention(userId),
+        "user.id": userId,
+        "guild.id": guild.id,
+        "guild.name": String(guild.name || guild.id),
+        reason
+      }).trim();
+
       db.logModerationAction({
         guildId: guild.id,
         action: "ban",
@@ -549,7 +568,7 @@ export function createModerationCommandHandlers({
         messageId: message.id
       });
 
-      await safeReply(message, `Banned ${formatUserMention(userId)}.`);
+      await safeReply(message, banText || `Banned ${formatUserMention(userId)}.`);
     },
 
     async unban({ message, args }) {
@@ -614,6 +633,17 @@ export function createModerationCommandHandlers({
         timeout_reason: reason
       });
 
+      const guildConfig = db.getGuildConfig(guild.id);
+      const muteText = renderMessageTemplate(guildConfig.mute_message_template, {
+        "user.mention": formatUserMention(userId),
+        "user.id": userId,
+        "guild.id": guild.id,
+        "guild.name": String(guild.name || guild.id),
+        reason,
+        until,
+        duration_minutes: String(durationMinutes)
+      }).trim();
+
       db.logModerationAction({
         guildId: guild.id,
         action: "mute",
@@ -628,7 +658,7 @@ export function createModerationCommandHandlers({
         }
       });
 
-      await safeReply(message, `${formatUserMention(userId)} muted for ${durationMinutes} minute(s).`);
+      await safeReply(message, muteText || `${formatUserMention(userId)} muted for ${durationMinutes} minute(s).`);
     },
 
     async unmute({ message, args }) {

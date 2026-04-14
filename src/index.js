@@ -1617,6 +1617,7 @@ const commandHandlers = {
     toIsoSeconds,
     getEffectiveGateState,
     sendWelcomeForMember,
+    renderMessageTemplate,
     normalizeEmojiInput,
     emojiRouteTokenFromNormalized,
     messageBaseUrl: config.web.baseUrl
