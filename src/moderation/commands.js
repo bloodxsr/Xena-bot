@@ -343,7 +343,7 @@ export function createModerationCommandHandlers({
       }
 
       const targetUserId = parseUserIdArg(args[0]) || message.author.id;
-      const count = db.getWarningCount(guild.id, targetUserId);
+      const count = await db.getWarningCount(guild.id, targetUserId);
       await safeReply(message, `${formatUserMention(targetUserId)} has ${count} warning(s).`);
     },
 
@@ -442,7 +442,7 @@ export function createModerationCommandHandlers({
         }
       }
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: deletedCount > 0 ? "purge" : "purge_failed",
         actorUserId: message.author.id,
@@ -510,7 +510,7 @@ export function createModerationCommandHandlers({
       const reason = sanitizeReason(args.slice(1).join(" ") || "No reason provided");
       await guild.kick(userId, { reason });
 
-      const guildConfig = db.getGuildConfig(guild.id);
+      const guildConfig = await db.getGuildConfig(guild.id);
       const kickText = renderMessageTemplate(guildConfig.kick_message_template, {
         "user.mention": formatUserMention(userId),
         "user.id": userId,
@@ -519,7 +519,7 @@ export function createModerationCommandHandlers({
         reason
       }).trim();
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "kick",
         actorUserId: message.author.id,
@@ -549,7 +549,7 @@ export function createModerationCommandHandlers({
       const reason = sanitizeReason(args.slice(1).join(" ") || "No reason provided");
       await guild.ban(userId, { reason });
 
-      const guildConfig = db.getGuildConfig(guild.id);
+      const guildConfig = await db.getGuildConfig(guild.id);
       const banText = renderMessageTemplate(guildConfig.ban_message_template, {
         "user.mention": formatUserMention(userId),
         "user.id": userId,
@@ -558,7 +558,7 @@ export function createModerationCommandHandlers({
         reason
       }).trim();
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "ban",
         actorUserId: message.author.id,
@@ -587,7 +587,7 @@ export function createModerationCommandHandlers({
 
       await guild.unban(userId);
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "unban",
         actorUserId: message.author.id,
@@ -633,7 +633,7 @@ export function createModerationCommandHandlers({
         timeout_reason: reason
       });
 
-      const guildConfig = db.getGuildConfig(guild.id);
+      const guildConfig = await db.getGuildConfig(guild.id);
       const muteText = renderMessageTemplate(guildConfig.mute_message_template, {
         "user.mention": formatUserMention(userId),
         "user.id": userId,
@@ -644,7 +644,7 @@ export function createModerationCommandHandlers({
         duration_minutes: String(durationMinutes)
       }).trim();
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "mute",
         actorUserId: message.author.id,
@@ -687,7 +687,7 @@ export function createModerationCommandHandlers({
         timeout_reason: reason
       });
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "unmute",
         actorUserId: message.author.id,
@@ -729,7 +729,7 @@ export function createModerationCommandHandlers({
 
       await member.roles.add(roleId);
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "add_role",
         actorUserId: message.author.id,
@@ -774,7 +774,7 @@ export function createModerationCommandHandlers({
 
       await member.roles.remove(roleId);
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "remove_role",
         actorUserId: message.author.id,
@@ -800,7 +800,7 @@ export function createModerationCommandHandlers({
 
       const mode = String(args[0] || "status").trim().toLowerCase();
       if (mode === "status") {
-        const state = getEffectiveGateState(guild.id);
+        const state = await getEffectiveGateState(guild.id);
         await safeReply(
           message,
           [
@@ -813,16 +813,16 @@ export function createModerationCommandHandlers({
       }
 
       if (mode === "off") {
-        db.setRaidGateState(guild.id, false, "Manual disable by staff", null);
+        await db.setRaidGateState(guild.id, false, "Manual disable by staff", null);
         await safeReply(message, "Raid gate disabled.");
         return;
       }
 
       if (mode === "on") {
-        const cfg = db.getGuildConfig(guild.id);
+        const cfg = await db.getGuildConfig(guild.id);
         const duration = Math.max(60, Math.min(Number(args[1] || cfg.gate_duration_seconds), 86400));
         const gateUntil = new Date(Date.now() + duration * 1000).toISOString();
-        db.setRaidGateState(guild.id, true, `Manual gate enabled by ${message.author.id}`, gateUntil);
+        await db.setRaidGateState(guild.id, true, `Manual gate enabled by ${message.author.id}`, gateUntil);
         await safeReply(message, `Raid gate enabled until ${gateUntil}.`);
         return;
       }
@@ -839,7 +839,7 @@ export function createModerationCommandHandlers({
       if (!guild) return;
 
       const limit = Math.max(1, Math.min(Number(args[0] || 10), 50));
-      const rows = db.listPendingVerifications(guild.id, limit);
+      const rows = await db.listPendingVerifications(guild.id, limit);
 
       if (rows.length === 0) {
         await safeReply(message, "No pending verifications.");
@@ -867,13 +867,13 @@ export function createModerationCommandHandlers({
         return;
       }
 
-      const current = db.getVerificationStatus(guild.id, userId);
+      const current = await db.getVerificationStatus(guild.id, userId);
       if (!current || current.status !== "pending") {
         await safeReply(message, "That member is not in the pending verification queue.");
         return;
       }
 
-      db.upsertVerificationMember({
+      await db.upsertVerificationMember({
         guildId: guild.id,
         userId,
         status: "verified",
@@ -900,7 +900,7 @@ export function createModerationCommandHandlers({
         timeoutError = String(error);
       }
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "verification_approved",
         actorUserId: message.author.id,
@@ -941,9 +941,9 @@ export function createModerationCommandHandlers({
       }
 
       const reason = sanitizeReason(args.slice(1).join(" ") || "No reason provided");
-      const current = db.getVerificationStatus(guild.id, userId);
+      const current = await db.getVerificationStatus(guild.id, userId);
 
-      db.upsertVerificationMember({
+      await db.upsertVerificationMember({
         guildId: guild.id,
         userId,
         status: "rejected",
@@ -963,7 +963,7 @@ export function createModerationCommandHandlers({
         kickError = String(error);
       }
 
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId: guild.id,
         action: "verification_rejected",
         actorUserId: message.author.id,
@@ -993,7 +993,7 @@ export function createModerationCommandHandlers({
       if (!guild) return;
 
       const limit = Math.max(1, Math.min(Number(args[0] || 10), 50));
-      const events = db.listRecentJoinEvents(guild.id, limit);
+      const events = await db.listRecentJoinEvents(guild.id, limit);
 
       if (events.length === 0) {
         await safeReply(message, "No join events recorded yet.");

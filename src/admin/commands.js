@@ -134,7 +134,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      const cfg = db.getGuildConfig(guild.id);
+      const cfg = await db.getGuildConfig(guild.id);
       await safeReply(
         message,
         [
@@ -180,7 +180,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      db.updateGuildConfig(guild.id, { log_channel_id: channelId });
+      await db.updateGuildConfig(guild.id, { log_channel_id: channelId });
       await safeReply(message, `Log channel ${channelId ? `set to ${channelId}` : "cleared"}.`);
     },
 
@@ -201,7 +201,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      db.updateGuildConfig(guild.id, { welcome_channel_id: channelId });
+      await db.updateGuildConfig(guild.id, { welcome_channel_id: channelId });
       await safeReply(message, `Welcome channel ${channelId ? `set to ${channelId}` : "cleared"}.`);
     },
 
@@ -226,7 +226,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      db.updateGuildConfig(guild.id, {
+      await db.updateGuildConfig(guild.id, {
         rules_channel_id: rules,
         chat_channel_id: chat,
         help_channel_id: help,
@@ -259,7 +259,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      db.updateGuildConfig(guild.id, {
+      await db.updateGuildConfig(guild.id, {
         admin_role_name: adminRole,
         mod_role_name: modRole
       });
@@ -280,7 +280,7 @@ export function createAdminCommandHandlers({
       const value = args.join(" ").trim();
       const lowered = value.toLowerCase();
       if (["", "off", "none", "clear", "null"].includes(lowered)) {
-        db.updateGuildConfig(guild.id, { verification_url: null });
+        await db.updateGuildConfig(guild.id, { verification_url: null });
         await safeReply(message, "Verification URL cleared. Manual review mode is active.");
         return;
       }
@@ -290,7 +290,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      db.updateGuildConfig(guild.id, { verification_url: value });
+      await db.updateGuildConfig(guild.id, { verification_url: value });
       await safeReply(message, "Verification URL updated.");
     },
 
@@ -318,7 +318,7 @@ export function createAdminCommandHandlers({
       const gateDurationSeconds = Math.max(60, Math.min(Number(args[3]), 86400));
       const mode = String(args[4] || "timeout").toLowerCase() === "kick" ? "kick" : "timeout";
 
-      db.updateGuildConfig(guild.id, {
+      await db.updateGuildConfig(guild.id, {
         raid_gate_threshold: threshold,
         raid_join_rate_threshold: joinRateThreshold,
         raid_monitor_window_seconds: windowSeconds,
@@ -350,10 +350,10 @@ export function createAdminCommandHandlers({
       }
 
       const rotate = ["rotate", "reset", "new"].includes(String(args[0] || "").trim().toLowerCase());
-      let record = db.getStaffTotpAuth(guild.id, userId);
+      let record = await db.getStaffTotpAuth(guild.id, userId);
 
       if (!record || rotate) {
-        record = db.upsertStaffTotpAuth({
+        record = await db.upsertStaffTotpAuth({
           guildId: guild.id,
           userId,
           secretBase32: generateTotpSecret(config.totp.secretLength),
@@ -437,7 +437,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      const record = db.getStaffTotpAuth(guild.id, userId);
+      const record = await db.getStaffTotpAuth(guild.id, userId);
       if (!record || !record.enabled || !record.secret_base32) {
         await safeReply(message, "TOTP is not set up yet. Run totpsetup first.", { title: "TOTP", kind: "warning" });
         return;
@@ -470,7 +470,7 @@ export function createAdminCommandHandlers({
 
       clearTotpFailures(rateLimitKey);
 
-      const updated = db.markStaffTotpVerified(guild.id, userId);
+      const updated = await db.markStaffTotpVerified(guild.id, userId);
       const status = buildTotpAuthorizationState(updated, config.totp.authWindowDays);
 
       await safeReply(
@@ -502,7 +502,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      const record = db.getStaffTotpAuth(guild.id, userId);
+      const record = await db.getStaffTotpAuth(guild.id, userId);
       const status = buildTotpAuthorizationState(record, config.totp.authWindowDays);
 
       await safeReply(
@@ -536,13 +536,13 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      const record = db.getStaffTotpAuth(guild.id, userId);
+      const record = await db.getStaffTotpAuth(guild.id, userId);
       if (!record) {
         await safeReply(message, "No TOTP enrollment found. Run totpsetup first.", { title: "TOTP", kind: "warning" });
         return;
       }
 
-      db.clearStaffTotpVerification(guild.id, userId);
+      await db.clearStaffTotpVerification(guild.id, userId);
       await safeReply(message, "TOTP authorization cleared. Run totpauth <code> to authorize again.", {
         title: "TOTP",
         kind: "info"
@@ -566,7 +566,7 @@ export function createAdminCommandHandlers({
         return;
       }
 
-      db.updateGuildConfig(guild.id, { leveling_channel_id: channelId });
+      await db.updateGuildConfig(guild.id, { leveling_channel_id: channelId });
       await safeReply(message, `Leveling channel ${channelId ? `set to ${channelId}` : "cleared"}.`);
     }
   };

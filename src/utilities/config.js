@@ -66,6 +66,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function parseDatabaseDriver(rawValue) {
+  return String(rawValue || "sqlite").trim().toLowerCase() === "postgres" ? "postgres" : "sqlite";
+}
+
+function parsePostgresSslMode(rawValue) {
+  return String(rawValue || "disabled").trim().toLowerCase() === "required" ? "required" : "disabled";
+}
+
 function resolvePath(rawPath, fallbackAbsolutePath) {
   if (!rawPath || String(rawPath).trim() === "") {
     return fallbackAbsolutePath;
@@ -138,6 +146,21 @@ export function loadConfig() {
     clamp(parseInteger(process.env.LEVELING_XP_MAX, 16), 1, 200)
   );
 
+  const databaseDriver = parseDatabaseDriver(process.env.DB_DRIVER);
+  const postgresHost = String(process.env.POSTGRES_HOST || "").trim();
+  const postgresPort = clamp(parseInteger(process.env.POSTGRES_PORT, 5432), 1, 65535);
+  const postgresUser = String(process.env.POSTGRES_USER || "").trim();
+  const postgresPassword = String(process.env.POSTGRES_PASSWORD || "");
+  const postgresDatabase = String(process.env.POSTGRES_DATABASE || "").trim();
+  const postgresPoolMax = Math.max(1, Math.min(parseInteger(process.env.POSTGRES_POOL_MAX, 10), 60));
+  const postgresSslMode = parsePostgresSslMode(process.env.POSTGRES_SSL_MODE);
+
+  if (databaseDriver === "postgres" && (!postgresHost || !postgresUser || !postgresDatabase)) {
+    throw new Error(
+      "DB_DRIVER=postgres requires POSTGRES_HOST, POSTGRES_USER, and POSTGRES_DATABASE to be set."
+    );
+  }
+
   return {
     projectRoot,
     repoRoot,
@@ -148,7 +171,17 @@ export function loadConfig() {
       baseUrl: messageBaseUrl
     },
     prefixes: parsePrefixes(process.env.BOT_PREFIXES),
+    databaseDriver,
     databasePath: resolvePath(process.env.DB_PATH, path.join(projectRoot, "data", "warnings.db")),
+    postgres: {
+      host: postgresHost,
+      port: postgresPort,
+      user: postgresUser,
+      password: postgresPassword,
+      database: postgresDatabase,
+      maxPoolSize: postgresPoolMax,
+      sslMode: postgresSslMode
+    },
     wordsJsonPath: resolvePath(process.env.WORDS_JSON_PATH, path.join(projectRoot, "data", "words.json")),
     maxWarnings: Math.max(1, Math.min(parseInteger(process.env.MAX_WARNINGS, 4), 20)),
     ai: {

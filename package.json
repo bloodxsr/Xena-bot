@@ -23,6 +23,7 @@
     "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.7",
     "node-emoji": "^2.2.0",
+    "pg": "^8.20.0",
     "play-dl": "^1.9.7",
     "yt-dlp-exec": "^1.0.2"
   }

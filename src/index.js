@@ -4,6 +4,7 @@ import { Client, Events, PermissionFlags, parseUserMention } from "@fluxerjs/cor
 
 import { loadConfig } from "./utilities/config.js";
 import { BotDatabase } from "./admin/database.js";
+import { PostgresBotDatabase } from "./admin/database-postgres.js";
 import { createAdminCommandHandlers } from "./admin/commands.js";
 import {
   normalizeEmojiInput,
@@ -19,7 +20,10 @@ import { renderWelcomeCardImage } from "./utilities/welcome-card-image.js";
 import { WordStore } from "./moderation/words.js";
 
 const config = loadConfig();
-const db = new BotDatabase(config.databasePath);
+const db =
+  config.databaseDriver === "postgres"
+    ? new PostgresBotDatabase(config.postgres)
+    : new BotDatabase(config.databasePath);
 const riskEngine = new RaidRiskEngine(config.raidMl);
 const spamEngine = new SpamRiskEngine(config.automod);
 const wordStore = new WordStore(config.wordsJsonPath);
@@ -848,7 +852,7 @@ async function requirePermission(
     return false;
   }
 
-  const record = db.getStaffTotpAuth(guildId, userId);
+  const record = await db.getStaffTotpAuth(guildId, userId);
   const totp = resolveTotpAuthorization(record, config.totp.authWindowDays);
 
   if (!totp.enrolled) {
@@ -1019,8 +1023,8 @@ async function sendVerificationDm(member, verificationUrl, reason) {
   return false;
 }
 
-function getEffectiveGateState(guildId) {
-  const state = db.getRaidGateState(guildId);
+async function getEffectiveGateState(guildId) {
+  const state = await db.getRaidGateState(guildId);
   if (!state.gate_active || !state.gate_until) {
     return state;
   }
@@ -1031,7 +1035,7 @@ function getEffectiveGateState(guildId) {
   }
 
   if (Date.now() >= gateUntilMs) {
-    db.setRaidGateState(guildId, false, "Gate expired", null);
+    await db.setRaidGateState(guildId, false, "Gate expired", null);
     return {
       gate_active: false,
       gate_reason: "Gate expired",
@@ -1051,7 +1055,7 @@ async function gateMember(member, signal, reason, guildConfig) {
     return "gated_failed";
   }
 
-  db.upsertVerificationMember({
+  await db.upsertVerificationMember({
     guildId,
     userId,
     status: "pending",
@@ -1073,7 +1077,7 @@ async function gateMember(member, signal, reason, guildConfig) {
   if (guildConfig.join_gate_mode === "kick") {
     try {
       await member.guild.kick(userId, { reason: sanitizeReason(`Join gated: ${reason}`) });
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId,
         action: "join_gate_kick",
         actorUserId: client.user?.id ?? null,
@@ -1083,7 +1087,7 @@ async function gateMember(member, signal, reason, guildConfig) {
       });
       return "gated_kick";
     } catch (error) {
-      db.logModerationAction({
+      await db.logModerationAction({
         guildId,
         action: "join_gate_kick_failed",
         actorUserId: client.user?.id ?? null,
@@ -1100,7 +1104,7 @@ async function gateMember(member, signal, reason, guildConfig) {
 
   const timeoutResult = await tryApplyTimeout(member, `Join gated: ${reason}`, guildConfig.gate_duration_seconds);
   if (timeoutResult.ok) {
-    db.logModerationAction({
+    await db.logModerationAction({
       guildId,
       action: "join_gate_timeout",
       actorUserId: client.user?.id ?? null,
@@ -1116,7 +1120,7 @@ async function gateMember(member, signal, reason, guildConfig) {
     return "gated_timeout";
   }
 
-  db.logModerationAction({
+  await db.logModerationAction({
     guildId,
     action: "join_gate_timeout_failed",
     actorUserId: client.user?.id ?? null,
@@ -1138,16 +1142,16 @@ async function sendWelcomeForMember(member) {
     return;
   }
 
-  const gateState = getEffectiveGateState(guildId);
+  const gateState = await getEffectiveGateState(guildId);
   if (gateState.gate_active) {
     return;
   }
 
-  if (db.isMemberPendingVerification(guildId, userId)) {
+  if (await db.isMemberPendingVerification(guildId, userId)) {
     return;
   }
 
-  const guildConfig = db.getGuildConfig(guildId);
+  const guildConfig = await db.getGuildConfig(guildId);
   const channelId = guildConfig.welcome_channel_id;
   if (!channelId) {
     return;
@@ -1253,8 +1257,8 @@ async function handleMemberJoin(member) {
     return;
   }
 
-  const guildConfig = db.getGuildConfig(guildId);
-  const gateState = getEffectiveGateState(guildId);
+  const guildConfig = await db.getGuildConfig(guildId);
+  const gateState = await getEffectiveGateState(guildId);
 
   const createdAt = snowflakeToDate(userId);
   const accountAgeDays = Math.max(0, (Date.now() - createdAt.getTime()) / 86400000);
@@ -1307,7 +1311,7 @@ async function handleMemberJoin(member) {
     gateReason =
       `Automated anti-raid trigger in closed testing. ${signal.explanation}. ` +
       `risk=${riskScore.toFixed(3)} confidence=${modelConfidence.toFixed(3)}`;
-    db.setRaidGateState(guildId, true, gateReason, gateUntil.toISOString());
+    await db.setRaidGateState(guildId, true, gateReason, gateUntil.toISOString());
     gateActive = true;
   }
 
@@ -1322,7 +1326,7 @@ async function handleMemberJoin(member) {
     action = await gateMember(member, signal, gateReason, guildConfig);
   }
 
-  db.logJoinEvent({
+  await db.logJoinEvent({
     guildId,
     userId,
     accountAgeDays: Number(signal.accountAgeDays ?? accountAgeDays),
@@ -1382,7 +1386,7 @@ async function handleReactionTicketCreate(reaction, user, messageId, channelId, 
     return;
   }
 
-  const guildConfig = db.getGuildConfig(guildId);
+  const guildConfig = await db.getGuildConfig(guildId);
   if (!guildConfig.ticket_enabled) {
     return;
   }
@@ -1419,7 +1423,7 @@ async function handleReactionTicketCreate(reaction, user, messageId, channelId, 
     return;
   }
 
-  const existingTicket = db.getOpenTicketForUser(guildId, resolvedUserId);
+  const existingTicket = await db.getOpenTicketForUser(guildId, resolvedUserId);
   if (existingTicket?.channel_id) {
     let existingChannel = null;
     try {
@@ -1436,7 +1440,7 @@ async function handleReactionTicketCreate(reaction, user, messageId, channelId, 
       return;
     }
 
-    db.clearOpenTicketForUser(guildId, resolvedUserId);
+    await db.clearOpenTicketForUser(guildId, resolvedUserId);
   }
 
   const ticketChannelName = buildTicketChannelName(member, resolvedUserId);
@@ -1467,7 +1471,7 @@ async function handleReactionTicketCreate(reaction, user, messageId, channelId, 
       throw new Error("ticket channel creation returned no channel id");
     }
 
-    db.setOpenTicket({
+    await db.setOpenTicket({
       guildId,
       userId: resolvedUserId,
       channelId: createdChannelId,
@@ -1505,7 +1509,7 @@ async function handleReactionTicketCreate(reaction, user, messageId, channelId, 
       `${formatUserMention(resolvedUserId)} ticket created: <#${createdChannelId}>.`
     );
 
-    db.logModerationAction({
+    await db.logModerationAction({
       guildId,
       action: "ticket_create",
       actorUserId: client.user?.id ?? null,
@@ -1521,7 +1525,7 @@ async function handleReactionTicketCreate(reaction, user, messageId, channelId, 
       }
     });
   } catch (error) {
-    db.logModerationAction({
+    await db.logModerationAction({
       guildId,
       action: "ticket_create_failed",
       actorUserId: client.user?.id ?? null,
@@ -1571,7 +1575,7 @@ async function applyReactionRole(reaction, emoji, userId, channelId, messageId, 
   let fallbackMappingUsed = false;
 
   for (const key of emojiKeys) {
-    const candidateRoleIds = db.getReactionRoleIds(guildId, resolvedChannelId, resolvedMessageId, key);
+    const candidateRoleIds = await db.getReactionRoleIds(guildId, resolvedChannelId, resolvedMessageId, key);
     if (candidateRoleIds.length > 0) {
       roleIds = candidateRoleIds;
       matchedEmojiKey = key;
@@ -1580,9 +1584,9 @@ async function applyReactionRole(reaction, emoji, userId, channelId, messageId, 
   }
 
   if (roleIds.length === 0) {
-    const messageMappings = db
+    const messageMappings = (await db
       .listReactionRoles(guildId, resolvedMessageId)
-      .filter((entry) => entry.channel_id === resolvedChannelId);
+      ).filter((entry) => entry.channel_id === resolvedChannelId);
 
     if (messageMappings.length === 1 && messageMappings[0].role_id) {
       roleIds = [messageMappings[0].role_id];
@@ -1618,7 +1622,7 @@ async function applyReactionRole(reaction, emoji, userId, channelId, messageId, 
       }
     }
 
-    db.logModerationAction({
+    await db.logModerationAction({
       guildId,
       action: remove ? "reaction_role_revoke" : "reaction_role_grant",
       actorUserId: client.user?.id ?? null,
@@ -1679,7 +1683,7 @@ async function handleSpamModeration(message) {
     // Best effort.
   }
 
-  const warningCount = db.incrementWarning(
+  const warningCount = await db.incrementWarning(
     guild.id,
     actorId,
     `Spam detected: ${reasonsText}`,
@@ -1705,7 +1709,7 @@ async function handleSpamModeration(message) {
     }
   }
 
-  const guildConfig = db.getGuildConfig(guild.id);
+  const guildConfig = await db.getGuildConfig(guild.id);
   let raidEscalated = false;
   let escalation = null;
 
@@ -1736,19 +1740,19 @@ async function handleSpamModeration(message) {
         escalationRate >= Math.max(6, config.automod.raidEscalationEventThreshold));
 
     if (shouldEscalate) {
-      const state = getEffectiveGateState(guild.id);
+      const state = await getEffectiveGateState(guild.id);
       if (!state.gate_active) {
         const gateReason =
           `Automatic raid gate from spam surge: ${escalation.eventCount} suspicious events from ` +
           `${escalation.uniqueUsers} users in ${escalation.windowSeconds}s (score=${escalationScore.toFixed(3)}).`;
         const gateUntil = new Date(Date.now() + guildConfig.gate_duration_seconds * 1000).toISOString();
-        db.setRaidGateState(guild.id, true, gateReason, gateUntil);
+        await db.setRaidGateState(guild.id, true, gateReason, gateUntil);
         raidEscalated = true;
       }
     }
   }
 
-  db.logModerationAction({
+  await db.logModerationAction({
     guildId: guild.id,
     action: timeoutApplied ? "automod_spam_timeout" : "automod_spam_warn",
     actorUserId: client.user?.id ?? null,
@@ -1811,7 +1815,7 @@ async function handleWordModeration(message) {
   }
 
   const actorId = message.author.id;
-  const warningCount = db.incrementWarning(guild.id, actorId, `Blocked word: ${blockedWord}`, client.user?.id ?? null);
+  const warningCount = await db.incrementWarning(guild.id, actorId, `Blocked word: ${blockedWord}`, client.user?.id ?? null);
 
   try {
     if (typeof message.delete === "function") {
@@ -1821,7 +1825,7 @@ async function handleWordModeration(message) {
     // Best effort.
   }
 
-  db.logModerationAction({
+  await db.logModerationAction({
     guildId: guild.id,
     action: "automod_warn",
     actorUserId: client.user?.id ?? null,
@@ -1847,7 +1851,7 @@ async function handleWordModeration(message) {
       );
 
       if (timeoutResult.ok) {
-        db.logModerationAction({
+        await db.logModerationAction({
           guildId: guild.id,
           action: "automod_word_timeout",
           actorUserId: client.user?.id ?? null,
@@ -1872,8 +1876,8 @@ async function handleWordModeration(message) {
 
     try {
       await guild.kick(actorId, { reason: `Exceeded warnings (${warningCount})` });
-      db.resetWarnings(guild.id, actorId);
-      db.logModerationAction({
+      await db.resetWarnings(guild.id, actorId);
+      await db.logModerationAction({
         guildId: guild.id,
         action: "automod_kick",
         actorUserId: client.user?.id ?? null,
@@ -1931,7 +1935,7 @@ async function sendLevelUpAnnouncement(message, guildConfig, levelSnapshot) {
     return;
   }
 
-  const rank = db.getMemberLevelRank(levelSnapshot.guild_id || message.guildId, levelSnapshot.user_id);
+  const rank = await db.getMemberLevelRank(levelSnapshot.guild_id || message.guildId, levelSnapshot.user_id);
   const progressBar = buildProgressBar(levelSnapshot.progress_xp, levelSnapshot.progress_required, 18);
   const xpToNext = Math.max(0, Number(levelSnapshot.progress_required || 0) - Number(levelSnapshot.progress_xp || 0));
 
@@ -1969,7 +1973,7 @@ async function handleLevelingMessage(message, parsedCommand = null) {
     return;
   }
 
-  const guildConfig = db.getGuildConfig(guild.id);
+  const guildConfig = await db.getGuildConfig(guild.id);
 
   if (config.leveling.ignoreCommandMessages) {
     const parsed = parsedCommand || parsePrefixedCommand(message.content);
@@ -1984,7 +1988,7 @@ async function handleLevelingMessage(message, parsedCommand = null) {
   }
 
   const xpGain = randomIntegerInRange(config.leveling.minXpPerMessage, config.leveling.maxXpPerMessage);
-  const levelSnapshot = db.addMemberXp({
+  const levelSnapshot = await db.addMemberXp({
     guildId: guild.id,
     userId: message.author.id,
     xpGain,
@@ -2049,7 +2053,7 @@ async function executeCommand(parsed, message) {
 
   const guildId = parseSnowflake(message?.guildId || message?.guild?.id);
   if (guildId && !NON_TOGGLEABLE_COMMANDS.has(parsed.command)) {
-    const enabled = db.isCommandEnabled(guildId, parsed.command);
+    const enabled = await db.isCommandEnabled(guildId, parsed.command);
     if (!enabled) {
       await safeReply(message, `Command is disabled in this server: ${parsed.command}`, {
         title: "Command Disabled",

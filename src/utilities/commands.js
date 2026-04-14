@@ -937,8 +937,8 @@ export function createUtilityCommandHandlers({
       const memberCount = Math.max(0, Number.isFinite(rawMemberCount) ? rawMemberCount : Number(guild.members?.size || 0));
 
       const emojiCount = Math.max(0, Number(guild.emojis?.size || 0));
-      const trackedMembers = db.getLevelMemberCount(guild.id);
-      const topEntry = db.listLevelLeaderboard(guild.id, 1, 0)[0] || null;
+      const trackedMembers = await db.getLevelMemberCount(guild.id);
+      const topEntry = (await db.listLevelLeaderboard(guild.id, 1, 0))[0] || null;
 
       const createdAtText = formatDateTimeUtc(resolveGuildCreatedAt(guild));
       const ownerId = String(guild.ownerId || "").trim();
@@ -994,12 +994,12 @@ export function createUtilityCommandHandlers({
         return;
       }
 
-      const guildConfig = db.getGuildConfig(guild.id);
+      const guildConfig = await db.getGuildConfig(guild.id);
 
       const targetUserId = parseUserIdArg(args[0]) || message.author.id;
-      const snapshot = db.getMemberLevel(guild.id, targetUserId);
-      const rank = db.getMemberLevelRank(guild.id, targetUserId);
-      const trackedMembers = Math.max(rank, db.getLevelMemberCount(guild.id));
+      const snapshot = await db.getMemberLevel(guild.id, targetUserId);
+      const rank = await db.getMemberLevelRank(guild.id, targetUserId);
+      const trackedMembers = Math.max(rank, await db.getLevelMemberCount(guild.id));
       const mention = formatUserMention(targetUserId);
 
       let displayName = String(message.author?.username || targetUserId);
@@ -1080,7 +1080,7 @@ export function createUtilityCommandHandlers({
       }
 
       const pageSize = 10;
-      const trackedMembers = db.getLevelMemberCount(guild.id);
+      const trackedMembers = await db.getLevelMemberCount(guild.id);
       if (trackedMembers === 0) {
         await safeReply(message, "No leveling data yet.");
         return;
@@ -1096,7 +1096,7 @@ export function createUtilityCommandHandlers({
 
       const offset = (page - 1) * pageSize;
 
-      const rows = db.listLevelLeaderboard(guild.id, pageSize, offset);
+      const rows = await db.listLevelLeaderboard(guild.id, pageSize, offset);
       if (rows.length === 0) {
         await safeReply(message, page === 1 ? "No leveling data yet." : "No entries on that page.");
         return;
