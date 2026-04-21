@@ -1,0 +1,5 @@
+node_modules
+target
+raid_ml_sidecar/target
+.git
+.env
