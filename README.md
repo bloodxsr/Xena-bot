@@ -9,15 +9,14 @@ This folder provides a runnable JS bot with core parity for:
 - Prefix command handling (`/` and `!` by default)
 - Moderation commands (`kick`, `ban`, `unban`, `mute`, `unmute`, `warnings`)
 - Server stats card command (`stats`)
-- Always-on leveling with image rank cards inspired by Mee6 (`rank`, `level`, `leaderboard`)
+- Always-on leveling with image rank cards inspired by Mee6 (`rank`, `leaderboard`, `activityboard`)
 - Music queue and voice playback commands (`join`, `play`, `nowplaying`, `queue`, `pause`, `resume`, `skip`, `stop`, `leave`)
 - Security and join-gate flow (`setverificationurl`, `setraidsettings`, `raidgate`, `verifyjoin`, `rejectjoin`, `pendingverifications`, `raidsnapshot`)
-- Staff TOTP flow for privileged commands (`totpsetup`, `totpauth`, `totpstatus`, `totplogout`) with 30-day reauthorization window
 - Auto moderation for spam bursts, duplicate spam, mention/link spam, and automatic timeout actions
 - Reaction role mapping and live role assignment on reaction add or remove
 - Word blacklist loading and enforcement
 - Optional Gemini-backed `ask` and `joke`
-- Next.js dashboard (`web_dashboard_ts`) with Fluxer OAuth, shared-server control panel, command toggles, warning visibility, raid gate actions, and TOTP-gated protected writes
+- Next.js dashboard (`web_dashboard_ts`) with Fluxer OAuth, shared-server control panel, command toggles, warning visibility, and raid gate actions
 
 ## Setup
 

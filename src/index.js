@@ -220,7 +220,7 @@ function buildProgressBar(current, total, size = 16) {
   return `${"=".repeat(clampedFilled)}${".".repeat(size - clampedFilled)}`;
 }
 
-const NON_TOGGLEABLE_COMMANDS = new Set(["help", "helpmenu", "totpsetup", "totpauth", "totpstatus", "totplogout"]);
+const NON_TOGGLEABLE_COMMANDS = new Set(["help"]);
 const WELCOME_CARD_IMAGE_FILE = "welcome-card.png";
 
 const TICKET_PERMISSION_BITS = {
@@ -705,7 +705,283 @@ async function safeReply(message, content, options = {}) {
   return null;
 }
 
+const PAGINATION_REACTION_ORDER = Object.freeze(["⏪", "◀️", "▶️", "⏩"]);
+const PAGINATION_ACTION_BY_EMOJI = new Map([
+  ["⏪", "first"],
+  ["⏮", "first"],
+  ["◀", "previous"],
+  ["▶", "next"],
+  ["⏩", "last"],
+  ["⏭", "last"]
+]);
+const PAGINATION_SESSION_TTL_MS = 15 * 60 * 1000;
+const paginationSessions = new Map();
+
+function normalizeEmojiSymbol(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\uFE0F/g, "");
+}
+
+function resolvePaginationAction(emoji) {
+  const rawCandidates = [
+    ...(Array.isArray(emojiKeyCandidatesFromGatewayEmoji(emoji)) ? emojiKeyCandidatesFromGatewayEmoji(emoji) : []),
+    emoji?.name,
+    emoji
+  ];
+
+  for (const candidate of rawCandidates) {
+    const normalized = normalizeEmojiSymbol(candidate);
+    if (!normalized) {
+      continue;
+    }
+
+    const action = PAGINATION_ACTION_BY_EMOJI.get(normalized);
+    if (action) {
+      return action;
+    }
+  }
+
+  return null;
+}
+
+function resolveReactionRouteToken(emoji) {
+  const rawCandidates = Array.isArray(emojiKeyCandidatesFromGatewayEmoji(emoji))
+    ? emojiKeyCandidatesFromGatewayEmoji(emoji)
+    : [];
+
+  for (const candidate of rawCandidates) {
+    const text = String(candidate || "").trim();
+    if (!text || /^\d{5,22}$/.test(text) || /^[^:]+:\d{5,22}$/.test(text)) {
+      continue;
+    }
+
+    return text;
+  }
+
+  return String(emoji?.name || emoji || "").trim();
+}
+
+function clearPaginationSessionTimer(session) {
+  if (session?.timer) {
+    clearTimeout(session.timer);
+    session.timer = null;
+  }
+}
+
+function armPaginationSession(session) {
+  clearPaginationSessionTimer(session);
+  session.expiresAt = Date.now() + PAGINATION_SESSION_TTL_MS;
+  session.timer = setTimeout(() => {
+    paginationSessions.delete(session.messageId);
+  }, PAGINATION_SESSION_TTL_MS);
+
+  if (session.timer && typeof session.timer.unref === "function") {
+    session.timer.unref();
+  }
+}
+
+async function addBotReactionToMessage(channelId, messageId, emoji) {
+  try {
+    await client.rest.put(
+      `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+      { auth: true }
+    );
+  } catch {
+    // Best effort pagination controls.
+  }
+}
+
+async function removeUserReactionFromMessage(channelId, messageId, emoji, userId) {
+  const routeToken = resolveReactionRouteToken(emoji);
+  if (!channelId || !messageId || !userId || !routeToken) {
+    return;
+  }
+
+  try {
+    await client.rest.delete(
+      `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(routeToken)}/${userId}`,
+      { auth: true }
+    );
+  } catch {
+    // Best effort cleanup of pagination reactions.
+  }
+}
+
+async function ensurePaginationReactions(channelId, messageId, totalPages) {
+  if (!channelId || !messageId || Math.max(1, Number(totalPages || 1)) <= 1) {
+    return;
+  }
+
+  for (const emoji of PAGINATION_REACTION_ORDER) {
+    await addBotReactionToMessage(channelId, messageId, emoji);
+  }
+}
+
+async function editPaginatedMessage(session, payload) {
+  let updatedMessage = null;
+
+  if (typeof session?.message?.edit === "function") {
+    try {
+      updatedMessage = await session.message.edit(payload);
+    } catch {
+      updatedMessage = null;
+    }
+  }
+
+  if (!updatedMessage) {
+    try {
+      const channel = await client.channels.resolve(session.channelId);
+      const fetchedMessage =
+        typeof channel?.messages?.fetch === "function"
+          ? await channel.messages.fetch(session.messageId)
+          : null;
+
+      if (fetchedMessage && typeof fetchedMessage.edit === "function") {
+        updatedMessage = await fetchedMessage.edit(payload);
+      }
+    } catch {
+      updatedMessage = null;
+    }
+  }
+
+  if (!updatedMessage && client.rest && typeof client.rest.patch === "function") {
+    updatedMessage = await client.rest.patch(
+      `/channels/${session.channelId}/messages/${session.messageId}`,
+      { auth: true, body: payload }
+    );
+  }
+
+  if (updatedMessage) {
+    session.message = updatedMessage;
+  }
+
+  return updatedMessage;
+}
+
+async function registerPaginatedMessage({ sentMessage, currentPage, totalPages, getPagePayload }) {
+  const messageId = parseSnowflake(sentMessage?.id);
+  const channelId = parseSnowflake(sentMessage?.channelId || sentMessage?.channel?.id);
+  if (!messageId || !channelId || typeof getPagePayload !== "function") {
+    return false;
+  }
+
+  const existing = paginationSessions.get(messageId);
+  if (existing) {
+    clearPaginationSessionTimer(existing);
+  }
+
+  const session = {
+    messageId,
+    channelId,
+    message: sentMessage,
+    currentPage: Math.max(1, Number(currentPage || 1)),
+    totalPages: Math.max(1, Number(totalPages || 1)),
+    getPagePayload,
+    expiresAt: Date.now() + PAGINATION_SESSION_TTL_MS,
+    timer: null
+  };
+
+  armPaginationSession(session);
+  paginationSessions.set(messageId, session);
+  Promise.resolve(ensurePaginationReactions(channelId, messageId, session.totalPages)).catch(() => {
+    // Best effort pagination controls.
+  });
+  return true;
+}
+
+async function handlePaginatedEmbedReaction(reaction, emoji, userId, channelId, messageId) {
+  const resolvedUserId = parseSnowflake(userId || reaction?.userId || reaction?.user_id || reaction?.user?.id);
+  const resolvedChannelId = parseSnowflake(
+    channelId || reaction?.channelId || reaction?.channel_id || reaction?.message?.channelId || reaction?.message?.channel_id
+  );
+  const resolvedMessageId = parseSnowflake(
+    messageId || reaction?.messageId || reaction?.message_id || reaction?.message?.id
+  );
+
+  if (!resolvedUserId || !resolvedChannelId || !resolvedMessageId) {
+    return false;
+  }
+
+  if (client.user?.id && resolvedUserId === client.user.id) {
+    return true;
+  }
+
+  const session = paginationSessions.get(resolvedMessageId);
+  if (!session || session.channelId !== resolvedChannelId) {
+    return false;
+  }
+
+  const action = resolvePaginationAction(emoji || reaction?.emoji);
+  if (!action) {
+    return false;
+  }
+
+  const nowMs = Date.now();
+  if (session.expiresAt <= nowMs) {
+    clearPaginationSessionTimer(session);
+    paginationSessions.delete(resolvedMessageId);
+    await removeUserReactionFromMessage(resolvedChannelId, resolvedMessageId, emoji || reaction?.emoji, resolvedUserId);
+    return true;
+  }
+
+  armPaginationSession(session);
+
+  try {
+    let requestedPage = Math.max(1, Number(session.currentPage || 1));
+    const knownTotalPages = Math.max(1, Number(session.totalPages || 1));
+
+    if (action === "first") {
+      requestedPage = 1;
+    } else if (action === "previous") {
+      requestedPage = Math.max(1, requestedPage - 1);
+    } else if (action === "next") {
+      requestedPage = Math.min(knownTotalPages, requestedPage + 1);
+    } else if (action === "last") {
+      requestedPage = knownTotalPages;
+    }
+
+    const nextState = await session.getPagePayload(requestedPage);
+    if (!nextState || !nextState.payload) {
+      return true;
+    }
+
+    const nextTotalPages = Math.max(1, Number(nextState.totalPages || 1));
+    const nextPage = Math.max(1, Math.min(Number(nextState.page || requestedPage), nextTotalPages));
+
+    if (nextPage !== session.currentPage || nextTotalPages !== session.totalPages) {
+      await editPaginatedMessage(session, nextState.payload);
+    }
+
+    session.currentPage = nextPage;
+    session.totalPages = nextTotalPages;
+  } catch (error) {
+    logError("pagination reaction update failed", error);
+  } finally {
+    await removeUserReactionFromMessage(resolvedChannelId, resolvedMessageId, emoji || reaction?.emoji, resolvedUserId);
+  }
+
+  return true;
+}
+
+const paginationRuntime = {
+  registerPaginatedMessage
+};
+
+const messageGuildCache = new WeakMap();
+const messageAuthorMemberCache = new WeakMap();
+const messageStaffCache = new WeakMap();
+
+function canCacheMessageObject(message) {
+  return Boolean(message && typeof message === "object");
+}
+
 async function resolveGuildFromMessage(message) {
+  if (canCacheMessageObject(message) && messageGuildCache.has(message)) {
+    return messageGuildCache.get(message);
+  }
+
+  const promise = (async () => {
   if (message.guild) {
     return message.guild;
   }
@@ -719,6 +995,13 @@ async function resolveGuildFromMessage(message) {
   } catch {
     return null;
   }
+  })();
+
+  if (canCacheMessageObject(message)) {
+    messageGuildCache.set(message, promise);
+  }
+
+  return promise;
 }
 
 async function resolveGuildMember(guild, userId) {
@@ -731,6 +1014,28 @@ async function resolveGuildMember(guild, userId) {
   } catch {
     return null;
   }
+}
+
+async function resolveAuthorMemberFromMessage(message, guild = null) {
+  if (canCacheMessageObject(message) && messageAuthorMemberCache.has(message)) {
+    return messageAuthorMemberCache.get(message);
+  }
+
+  const promise = (async () => {
+    const resolvedGuild = guild || (await resolveGuildFromMessage(message));
+    const authorId = parseSnowflake(message?.author?.id);
+    if (!resolvedGuild || !authorId) {
+      return null;
+    }
+
+    return resolveGuildMember(resolvedGuild, authorId);
+  })();
+
+  if (canCacheMessageObject(message)) {
+    messageAuthorMemberCache.set(message, promise);
+  }
+
+  return promise;
 }
 
 function memberRoleNames(member) {
@@ -750,139 +1055,42 @@ function memberRoleNames(member) {
 }
 
 async function isStaffMember(message) {
-  const guild = await resolveGuildFromMessage(message);
-  if (!guild) {
-    return false;
+  if (canCacheMessageObject(message) && messageStaffCache.has(message)) {
+    return messageStaffCache.get(message);
   }
 
-  const member = await resolveGuildMember(guild, message.author?.id);
-  if (!member) {
-    return false;
+  const promise = (async () => {
+    const member = await resolveAuthorMemberFromMessage(message);
+    return Boolean(member?.permissions?.has(PermissionFlags.Administrator));
+  })();
+
+  if (canCacheMessageObject(message)) {
+    messageStaffCache.set(message, promise);
   }
 
-  if (member.permissions?.has(PermissionFlags.Administrator)) {
-    return true;
-  }
-
-  return false;
-}
-
-const TOTP_PROTECTED_PERMISSIONS = new Set(
-  [
-    PermissionFlags.Administrator,
-    PermissionFlags.ManageGuild,
-    PermissionFlags.ManageRoles,
-    PermissionFlags.ManageMessages,
-    PermissionFlags.ModerateMembers,
-    PermissionFlags.KickMembers,
-    PermissionFlags.BanMembers
-  ].filter((value) => value != null)
-);
-
-function isTotpProtectedPermission(permissionFlag) {
-  return TOTP_PROTECTED_PERMISSIONS.has(permissionFlag);
-}
-
-function resolveTotpAuthorization(record, authWindowDays) {
-  const result = {
-    enrolled: Boolean(record?.enabled && record?.secret_base32),
-    authorized: false,
-    expiresAt: null
-  };
-
-  if (!result.enrolled || !record?.last_verified_at) {
-    return result;
-  }
-
-  const lastVerifiedAtMs = Date.parse(String(record.last_verified_at));
-  if (!Number.isFinite(lastVerifiedAtMs)) {
-    return result;
-  }
-
-  const ttlMs = Math.max(1, Number(authWindowDays || 30)) * 24 * 60 * 60 * 1000;
-  const expiresAtMs = lastVerifiedAtMs + ttlMs;
-  result.expiresAt = new Date(expiresAtMs).toISOString();
-  result.authorized = Date.now() < expiresAtMs;
-
-  return result;
+  return promise;
 }
 
 async function hasPermission(message, permissionFlag) {
-  const guild = await resolveGuildFromMessage(message);
-  if (!guild) {
-    return false;
-  }
-
-  const member = await resolveGuildMember(guild, message.author?.id);
+  const member = await resolveAuthorMemberFromMessage(message);
   if (!member) {
     return false;
   }
 
-  return (
+  return Boolean(
     member.permissions?.has(permissionFlag) ||
-    member.permissions?.has(PermissionFlags.Administrator) ||
-    (await isStaffMember(message))
+    member.permissions?.has(PermissionFlags.Administrator)
   );
 }
 
 async function requirePermission(
   message,
   permissionFlag,
-  deniedText = "You do not have permission for this command.",
-  options = {}
+  deniedText = "You do not have permission for this command."
 ) {
   const allowed = await hasPermission(message, permissionFlag);
   if (!allowed) {
     await safeReply(message, deniedText);
-    return false;
-  }
-
-  const skipTotp = options && options.skipTotp === true;
-  if (skipTotp || !config.totp.enabled || !isTotpProtectedPermission(permissionFlag)) {
-    return true;
-  }
-
-  const guildId = parseSnowflake(message?.guildId || message?.guild?.id);
-  const userId = parseSnowflake(message?.author?.id);
-  if (!guildId || !userId) {
-    await safeReply(message, "TOTP verification requires a guild context and a resolvable user.", {
-      title: "TOTP",
-      kind: "warning"
-    });
-    return false;
-  }
-
-  const record = await db.getStaffTotpAuth(guildId, userId);
-  const totp = resolveTotpAuthorization(record, config.totp.authWindowDays);
-
-  if (!totp.enrolled) {
-    await safeReply(
-      message,
-      [
-        "TOTP setup is required for protected staff commands.",
-        "Run: totpsetup",
-        "Then verify with: totpauth <6-digit-code>"
-      ].join("\n"),
-      {
-        title: "TOTP Required",
-        kind: "warning"
-      }
-    );
-    return false;
-  }
-
-  if (!totp.authorized) {
-    await safeReply(
-      message,
-      [
-        `Your TOTP authorization expired or is missing (window: ${config.totp.authWindowDays} days).`,
-        "Run: totpauth <6-digit-code>"
-      ].join("\n"),
-      {
-        title: "TOTP Reverification Required",
-        kind: "warning"
-      }
-    );
     return false;
   }
 
@@ -1643,7 +1851,7 @@ async function applyReactionRole(reaction, emoji, userId, channelId, messageId, 
   }
 }
 
-async function handleSpamModeration(message) {
+async function handleSpamModeration(message, options = {}) {
   if (!config.automod.spamDetectionEnabled) {
     return false;
   }
@@ -1652,12 +1860,15 @@ async function handleSpamModeration(message) {
     return false;
   }
 
-  const guild = await resolveGuildFromMessage(message);
+  const guild = options.guild || (await resolveGuildFromMessage(message));
   if (!guild) {
     return false;
   }
 
-  if (await isStaffMember(message)) {
+  const authorIsStaff =
+    typeof options.authorIsStaff === "boolean" ? options.authorIsStaff : await isStaffMember(message);
+
+  if (authorIsStaff) {
     return false;
   }
 
@@ -1799,7 +2010,7 @@ async function handleSpamModeration(message) {
   return true;
 }
 
-async function handleWordModeration(message) {
+async function handleWordModeration(message, options = {}) {
   if (!message.guildId || !message.content || message.author?.bot) {
     return false;
   }
@@ -1809,7 +2020,7 @@ async function handleWordModeration(message) {
     return false;
   }
 
-  const guild = await resolveGuildFromMessage(message);
+  const guild = options.guild || (await resolveGuildFromMessage(message));
   if (!guild) {
     return false;
   }
@@ -1963,17 +2174,15 @@ async function sendLevelUpAnnouncement(message, guildConfig, levelSnapshot) {
   }
 }
 
-async function handleLevelingMessage(message, parsedCommand = null) {
+async function handleLevelingMessage(message, parsedCommand = null, options = {}) {
   if (!message.guildId || message.author?.bot) {
     return;
   }
 
-  const guild = await resolveGuildFromMessage(message);
+  const guild = options.guild || (await resolveGuildFromMessage(message));
   if (!guild) {
     return;
   }
-
-  const guildConfig = await db.getGuildConfig(guild.id);
 
   if (config.leveling.ignoreCommandMessages) {
     const parsed = parsedCommand || parsePrefixedCommand(message.content);
@@ -1999,6 +2208,7 @@ async function handleLevelingMessage(message, parsedCommand = null) {
     return;
   }
 
+  const guildConfig = await db.getGuildConfig(guild.id);
   await sendLevelUpAnnouncement(message, guildConfig, levelSnapshot);
 }
 
@@ -2012,7 +2222,8 @@ const commandHandlers = {
     resolveGuildFromMessage,
     parseUserIdArg,
     formatUserMention,
-    musicRuntime
+    musicRuntime,
+    paginationRuntime
   }),
   ...createAdminCommandHandlers({
     PermissionFlags,
@@ -2020,8 +2231,7 @@ const commandHandlers = {
     resolveGuildFromMessage,
     safeReply,
     db,
-    parseSnowflake,
-    config
+    parseSnowflake
   }),
   ...createModerationCommandHandlers({
     PermissionFlags,
@@ -2095,6 +2305,25 @@ client.on(Events.Ready, () => {
   logInfo(`ready as ${client.user?.username || client.user?.id || "bot"}`);
 });
 
+client.on(Events.GuildCreate, async (guild) => {
+  try {
+    if (!guild || !guild.id) return;
+    logInfo(`Joined new guild: ${guild.name || guild.id} (${guild.id})`);
+    
+    // Dynamically initialize configuration
+    await db.getGuildConfig(guild.id);
+
+    // Warm up caches for seamless dynamic performance
+    await Promise.allSettled([
+      typeof guild.fetchChannels === "function" ? guild.fetchChannels() : null,
+      typeof guild.fetchRoles === "function" ? guild.fetchRoles() : null,
+      typeof guild.fetchEmojis === "function" ? guild.fetchEmojis() : null
+    ]);
+  } catch (error) {
+    logError("guild create handler failed", error);
+  }
+});
+
 client.on(Events.Error, (error) => {
   logError("client error", error);
 });
@@ -2110,8 +2339,15 @@ client.on(Events.GuildMemberAdd, async (member) => {
 client.on(Events.MessageReactionAdd, async (reaction, user, messageId, channelId, emoji, userId) => {
   try {
     const resolvedUserId = userId || user?.id || null;
-    await applyReactionRole(reaction, emoji, resolvedUserId, channelId, messageId, false);
-    await handleReactionTicketCreate(reaction, user, messageId, channelId, emoji, resolvedUserId);
+    const paginationHandled = await handlePaginatedEmbedReaction(reaction, emoji, resolvedUserId, channelId, messageId);
+    if (paginationHandled) {
+      return;
+    }
+
+    await Promise.allSettled([
+      applyReactionRole(reaction, emoji, resolvedUserId, channelId, messageId, false),
+      handleReactionTicketCreate(reaction, user, messageId, channelId, emoji, resolvedUserId)
+    ]);
   } catch (error) {
     logError("reaction add handler failed", error);
   }
@@ -2126,24 +2362,62 @@ client.on(Events.MessageReactionRemove, async (reaction, user, messageId, channe
   }
 });
 
+const activeVoiceSessions = new Map();
+
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  try {
+    const guildId = newState?.guildId || oldState?.guildId;
+    const userId = newState?.userId || oldState?.userId || newState?.id || oldState?.id;
+    if (!guildId || !userId) return;
+
+    if (newState?.member?.user?.bot || oldState?.member?.user?.bot) {
+      return;
+    }
+
+    const oldChannelId = oldState?.channelId;
+    const newChannelId = newState?.channelId;
+    const sessionKey = `${guildId}_${userId}`;
+
+    if (!oldChannelId && newChannelId) {
+      activeVoiceSessions.set(sessionKey, Date.now());
+    } else if (oldChannelId && !newChannelId) {
+      const joinedAt = activeVoiceSessions.get(sessionKey);
+      if (joinedAt) {
+        const durationSecs = Math.floor((Date.now() - joinedAt) / 1000);
+        activeVoiceSessions.delete(sessionKey);
+        await db.addVoiceTime(guildId, userId, durationSecs);
+      }
+    }
+  } catch (error) {
+    logError("voice state update handler failed", error);
+  }
+});
+
 client.on(Events.MessageCreate, async (message) => {
   try {
     if (message.author?.bot) {
       return;
     }
 
-    const spamBlocked = await handleSpamModeration(message);
+    const guild = message.guildId ? await resolveGuildFromMessage(message) : null;
+    const authorIsStaff = guild && config.automod.spamDetectionEnabled ? await isStaffMember(message) : false;
+    const messageContext = {
+      guild,
+      authorIsStaff
+    };
+
+    const spamBlocked = await handleSpamModeration(message, messageContext);
     if (spamBlocked) {
       return;
     }
 
-    const blocked = await handleWordModeration(message);
+    const blocked = await handleWordModeration(message, messageContext);
     if (blocked) {
       return;
     }
 
     const parsed = parsePrefixedCommand(message.content);
-    await handleLevelingMessage(message, parsed);
+    await handleLevelingMessage(message, parsed, messageContext);
 
     if (!parsed) {
       return;

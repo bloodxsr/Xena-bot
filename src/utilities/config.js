@@ -229,15 +229,6 @@ export function loadConfig() {
       ignoreCommandMessages: parseBoolean(process.env.LEVELING_IGNORE_COMMAND_MESSAGES, true),
       announceLevelUp: parseBoolean(process.env.LEVELING_ANNOUNCE_LEVEL_UP, true)
     },
-    totp: {
-      enabled: parseBoolean(process.env.TOTP_ENABLED, true),
-      issuer: String(process.env.TOTP_ISSUER || "FluxerBot").trim() || "FluxerBot",
-      authWindowDays: clamp(parseInteger(process.env.TOTP_AUTH_WINDOW_DAYS, 30), 1, 365),
-      codeDigits: clamp(parseInteger(process.env.TOTP_CODE_DIGITS, 6), 6, 8),
-      periodSeconds: clamp(parseInteger(process.env.TOTP_PERIOD_SECONDS, 30), 15, 120),
-      verifyWindowSteps: clamp(parseInteger(process.env.TOTP_VERIFY_WINDOW_STEPS, 1), 0, 5),
-      secretLength: clamp(parseInteger(process.env.TOTP_SECRET_LENGTH, 32), 16, 64)
-    },
     uptime: {
       enabled: parseBoolean(process.env.ENABLE_UPTIME_SERVER, false),
       host: String(process.env.UPTIME_HOST || "0.0.0.0"),

@@ -34,6 +34,62 @@ function progressBar(current, total, size = 16) {
   return `${"=".repeat(clampedFilled)}${".".repeat(size - clampedFilled)}`;
 }
 
+function buildPaginationFooterText(baseText, totalPages) {
+  const base = String(baseText || "").trim();
+  if (Math.max(1, Number(totalPages || 1)) <= 1) {
+    return base;
+  }
+
+  const navigationText = "Use the reaction controls to change pages.";
+  return base ? `${base} | ${navigationText}` : navigationText;
+}
+
+function createCommandEmbed({ title, description, color, fields = [], footer = null }) {
+  return {
+    embeds: [
+      {
+        title,
+        description,
+        color,
+        fields,
+        footer: footer ? { text: footer } : undefined,
+        timestamp: new Date().toISOString()
+      }
+    ]
+  };
+}
+
+function chunkEntries(entries, size = 6) {
+  const normalizedSize = Math.max(1, Math.trunc(Number(size) || 6));
+  const chunks = [];
+
+  for (let index = 0; index < entries.length; index += normalizedSize) {
+    chunks.push(entries.slice(index, index + normalizedSize));
+  }
+
+  return chunks;
+}
+
+function formatCommandBullet(command) {
+  return `- \`${String(command || "").trim()}\``;
+}
+
+function buildHelpUnknownPayload(requestedSection, availableSections) {
+  return createCommandEmbed({
+    title: "Help Menu",
+    description: `Unknown help section: \`${String(requestedSection || "").trim() || "unknown"}\``,
+    color: 0xf59e0b,
+    fields: [
+      {
+        name: "Available Sections",
+        value: availableSections.map((section) => `\`${section}\``).join(", "),
+        inline: false
+      }
+    ],
+    footer: "Try /help admin, /help moderation, or /help music."
+  });
+}
+
 const LEVEL_CARD_IMAGE_FILE = "level-card.png";
 const SERVER_STATS_IMAGE_FILE = "server-stats.png";
 const DISCORD_EPOCH_MS = 1420070400000n;
@@ -153,45 +209,38 @@ function buildLevelCardPayload({
   const progress = progressBar(progressXp, progressRequired, 18);
   const rankSuffix = trackedMembers > 0 ? `/${trackedMembers}` : "";
 
-  return {
-    embeds: [
+  return createCommandEmbed({
+    title: "Level Card",
+    description: `${mention}\nServer rank: #${rank}${rankSuffix} | Current level: ${level}`,
+    color: colorHexToInt(embedColor, 0x1f6feb),
+    fields: [
       {
-        title: "Level Card",
-        description: [mention, `Rank #${rank}${rankSuffix} | Level ${level}`].join("\n"),
-        color: colorHexToInt(embedColor, 0x1f6feb),
-        fields: [
-          {
-            name: "Progress",
-            value: [
-              `[${progress}] ${progressPercent}%`,
-              `XP ${formatInteger(progressXp)}/${formatInteger(progressRequired)}`,
-              `${formatInteger(xpToNext)} XP to next level`
-            ].join("\n"),
-            inline: false
-          },
-          {
-            name: "Total XP",
-            value: formatInteger(totalXp),
-            inline: true
-          },
-          {
-            name: "Messages",
-            value: formatInteger(messageCount),
-            inline: true
-          },
-          {
-            name: "Next Level",
-            value: `Level ${Math.max(0, Number(level || 0)) + 1}`,
-            inline: true
-          }
-        ],
-        footer: {
-          text: "Keep chatting to earn XP."
-        },
-        timestamp: new Date().toISOString()
+        name: "XP Progress",
+        value: [
+          `[${progress}] ${progressPercent}%`,
+          `XP ${formatInteger(progressXp)}/${formatInteger(progressRequired)}`,
+          `${formatInteger(xpToNext)} XP to next level`
+        ].join("\n"),
+        inline: false
+      },
+      {
+        name: "Total XP",
+        value: formatInteger(totalXp),
+        inline: true
+      },
+      {
+        name: "Messages",
+        value: formatInteger(messageCount),
+        inline: true
+      },
+      {
+        name: "Next Level",
+        value: `Level ${Math.max(0, Number(level || 0)) + 1}`,
+        inline: true
       }
-    ]
-  };
+    ],
+    footer: "Keep chatting to earn XP."
+  });
 }
 
 async function tryBuildLevelCardImagePayload({
@@ -264,54 +313,44 @@ function buildServerStatsPayload({
   trackedMembers,
   topLevelText
 }) {
-  const lines = [
-    `Server: ${guildName}`,
-    `ID: ${guildId}`,
-    `Owner: ${ownerMention}`,
-    `Created: ${createdAtText}`
-  ];
-
-  if (topLevelText) {
-    lines.push(`Top Level: ${topLevelText}`);
-  }
-
-  return {
-    embeds: [
+  return createCommandEmbed({
+    title: "Server Stats",
+    description: [
+      `Server: ${guildName}`,
+      `Owner: ${ownerMention}`,
+      `Created: ${createdAtText}`,
+      `Server ID: ${guildId}`,
+      `Top Level: ${topLevelText || "No leveling data yet."}`
+    ].join("\n"),
+    color: 0x0ea5e9,
+    fields: [
       {
-        title: "Server Stats",
-        description: lines.join("\n"),
-        color: 0x0ea5e9,
-        fields: [
-          {
-            name: "Members",
-            value: formatInteger(memberCount),
-            inline: true
-          },
-          {
-            name: "Channels",
-            value: formatInteger(channelCount),
-            inline: true
-          },
-          {
-            name: "Roles",
-            value: formatInteger(roleCount),
-            inline: true
-          },
-          {
-            name: "Emojis",
-            value: formatInteger(emojiCount),
-            inline: true
-          },
-          {
-            name: "Tracked Leveling Members",
-            value: formatInteger(trackedMembers),
-            inline: true
-          }
-        ],
-        timestamp: new Date().toISOString()
+        name: "Members",
+        value: formatInteger(memberCount),
+        inline: true
+      },
+      {
+        name: "Channels",
+        value: formatInteger(channelCount),
+        inline: true
+      },
+      {
+        name: "Roles",
+        value: formatInteger(roleCount),
+        inline: true
+      },
+      {
+        name: "Emojis",
+        value: formatInteger(emojiCount),
+        inline: true
+      },
+      {
+        name: "Tracked Members",
+        value: formatInteger(trackedMembers),
+        inline: true
       }
     ]
-  };
+  });
 }
 
 async function tryBuildServerStatsImagePayload({
@@ -376,36 +415,74 @@ function buildLeaderboardPayload({ rows, page, totalPages, trackedMembers }) {
     return `${index}. <@${entry.user_id}> | L${entry.level} | ${formatInteger(entry.xp)} XP | ${formatInteger(entry.message_count)} msg`;
   });
 
-  return {
-    embeds: [
+  return createCommandEmbed({
+    title: "Level Leaderboard",
+    description: lines.length > 0 ? lines.join("\n") : "No leveling data yet.",
+    color: 0x2ea043,
+    fields: [
       {
-        title: "Level Leaderboard",
-        description: lines.join("\n"),
-        color: 0x2ea043,
-        fields: [
-          {
-            name: "Page",
-            value: `${page}/${totalPages}`,
-            inline: true
-          },
-          {
-            name: "Tracked Members",
-            value: formatInteger(trackedMembers),
-            inline: true
-          },
-          {
-            name: "Page Size",
-            value: "10",
-            inline: true
-          }
-        ],
-        footer: {
-          text: "Use /rank [user] for a detailed level card."
-        },
-        timestamp: new Date().toISOString()
+        name: "Page",
+        value: `${page}/${totalPages}`,
+        inline: true
+      },
+      {
+        name: "Tracked Members",
+        value: formatInteger(trackedMembers),
+        inline: true
+      },
+      {
+        name: "Page Size",
+        value: "10",
+        inline: true
       }
-    ]
-  };
+    ],
+    footer: buildPaginationFooterText("Use /rank [user] for a detailed level card.", totalPages)
+  });
+}
+
+function formatDuration(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function formatVoiceHours(seconds) {
+  const normalizedSeconds = Math.max(0, Number(seconds || 0));
+  const hours = normalizedSeconds / 3600;
+  const roundedHours = Math.round(hours * 10) / 10;
+  return `${roundedHours.toFixed(1).replace(/\.0$/, "")}h`;
+}
+
+function buildActivityBoardPayload({ rows, page, totalPages, trackedMembers }) {
+  const lines = rows.map((entry) => {
+    const index = String(entry.rank).padStart(2, "0");
+    return `${index}. <@${entry.user_id}> | voice: ${formatVoiceHours(entry.voice_seconds)} (${formatDuration(entry.voice_seconds)}) | messages: ${formatInteger(entry.message_count)}`;
+  });
+
+  return createCommandEmbed({
+    title: "Activity Leaderboard",
+    description: lines.length > 0 ? lines.join("\n") : "No activity data available.",
+    color: 0x9b59b6,
+    fields: [
+      {
+        name: "Page",
+        value: `${page}/${totalPages}`,
+        inline: true
+      },
+      {
+        name: "Tracked Members",
+        value: formatInteger(trackedMembers),
+        inline: true
+      },
+      {
+        name: "Page Size",
+        value: "10",
+        inline: true
+      }
+    ],
+    footer: buildPaginationFooterText("Ranked by voice time first, then messages.", totalPages)
+  });
 }
 
 export function createUtilityCommandHandlers({
@@ -417,13 +494,14 @@ export function createUtilityCommandHandlers({
   resolveGuildFromMessage,
   parseUserIdArg,
   formatUserMention,
-  musicRuntime = null
+  musicRuntime = null,
+  paginationRuntime = null
 }) {
   const helpSections = {
     general: {
       title: "General",
       summary: "Core utility and info commands.",
-      commands: ["help [section]", "helpmenu [section]", "perks", "stats"]
+      commands: ["help [section]", "perks", "stats"]
     },
     admin: {
       title: "Admin",
@@ -473,7 +551,7 @@ export function createUtilityCommandHandlers({
     leveling: {
       title: "Leveling",
       summary: "XP, rank, and leaderboard commands.",
-      commands: ["rank [user]", "level [user]", "leaderboard [page]"]
+      commands: ["rank [user]", "leaderboard [page]", "activityboard [page]"]
     },
     music: {
       title: "Music",
@@ -490,11 +568,6 @@ export function createUtilityCommandHandlers({
         "leave"
       ]
     },
-    security: {
-      title: "Security",
-      summary: "Staff TOTP enrollment and authorization.",
-      commands: ["totpsetup [rotate]", "totpauth <code>", "totpstatus", "totplogout"]
-    },
     ai: {
       title: "AI",
       summary: "AI assistant prompts.",
@@ -502,7 +575,7 @@ export function createUtilityCommandHandlers({
     }
   };
 
-  const orderedHelpSections = ["general", "admin", "moderation", "reactionroles", "leveling", "music", "security", "ai"];
+  const orderedHelpSections = ["general", "admin", "moderation", "reactionroles", "leveling", "music", "ai"];
 
   const helpAliasToSection = {
     general: "general",
@@ -523,9 +596,9 @@ export function createUtilityCommandHandlers({
     music: "music",
     audio: "music",
     songs: "music",
-    security: "security",
-    totp: "security",
-    verification: "security",
+    verification: "moderation",
+    raid: "moderation",
+    activity: "leveling",
     ai: "ai"
   };
 
@@ -535,28 +608,41 @@ export function createUtilityCommandHandlers({
       .replace(/[^a-z0-9]/g, "");
   }
 
-  function formatHelpOverview() {
-    const lines = [
-      "Help Menu",
-      "",
-      "Use /help <section> for focused command lists.",
-      "Examples: /help admin, /help moderation, /help reactionroles",
-      "",
-      "Sections:"
-    ];
-
-    for (const sectionKey of orderedHelpSections) {
-      const section = helpSections[sectionKey];
-      lines.push(`- ${sectionKey}: ${section.summary}`);
-    }
-
-    lines.push("", "Prefixes: / and !");
-    return lines.join("\n");
+  function buildHelpOverviewPayload() {
+    return createCommandEmbed({
+      title: "Help Menu",
+      description: [
+        "Use `/help <section>` to open a focused command list.",
+        "Examples: `/help admin`, `/help moderation`, `/help music`."
+      ].join("\n"),
+      color: 0x5865f2,
+      fields: orderedHelpSections.map((sectionKey) => {
+        const section = helpSections[sectionKey];
+        return {
+          name: section.title,
+          value: section.summary,
+          inline: true
+        };
+      }),
+      footer: "Prefixes supported: / and !"
+    });
   }
 
-  function formatHelpSection(sectionKey) {
+  function buildHelpSectionPayload(sectionKey) {
     const section = helpSections[sectionKey];
-    return [`${section.title} Commands`, "", ...section.commands.map((command) => `- ${command}`), "", "Tip: use /help to list all sections."].join("\n");
+    const commandFields = chunkEntries(section.commands, 6).map((entries, index) => ({
+      name: index === 0 ? "Commands" : "More Commands",
+      value: entries.map(formatCommandBullet).join("\n"),
+      inline: false
+    }));
+
+    return createCommandEmbed({
+      title: `${section.title} Commands`,
+      description: section.summary,
+      color: 0x5865f2,
+      fields: commandFields,
+      footer: "Use /help to view all sections."
+    });
   }
 
   function formatMusicTrack(track, fallback = "Unknown track") {
@@ -569,14 +655,32 @@ export function createUtilityCommandHandlers({
     return `${title} (${duration})`;
   }
 
+  async function sendPaginatedBoard(message, loadPage, requestedPage = 1) {
+    const initialState = await loadPage(requestedPage);
+    const sentMessage = await safeReply(message, initialState.payload);
+
+    if (
+      sentMessage &&
+      paginationRuntime &&
+      typeof paginationRuntime.registerPaginatedMessage === "function" &&
+      initialState.totalPages > 1
+    ) {
+      await paginationRuntime.registerPaginatedMessage({
+        sentMessage,
+        currentPage: initialState.page,
+        totalPages: initialState.totalPages,
+        getPagePayload: loadPage
+      });
+    }
+
+    return sentMessage;
+  }
+
   const handlers = {
     async help({ message, args }) {
       const requested = args.join(" ").trim();
       if (!requested) {
-        await safeReply(message, formatHelpOverview(), {
-          title: "Help Menu",
-          kind: "info"
-        });
+        await safeReply(message, buildHelpOverviewPayload());
         return;
       }
 
@@ -584,30 +688,11 @@ export function createUtilityCommandHandlers({
       const sectionKey = helpAliasToSection[normalizedRequested];
 
       if (!sectionKey) {
-        await safeReply(
-          message,
-          [
-            `Unknown help section: ${requested}`,
-            "",
-            `Available sections: ${orderedHelpSections.join(", ")}`,
-            "Example: /help admin"
-          ].join("\n"),
-          {
-            title: "Help Menu",
-            kind: "warning"
-          }
-        );
+        await safeReply(message, buildHelpUnknownPayload(requested, orderedHelpSections));
         return;
       }
 
-      await safeReply(message, formatHelpSection(sectionKey), {
-        title: `${helpSections[sectionKey].title} Help`,
-        kind: "info"
-      });
-    },
-
-    async helpmenu(ctx) {
-      return handlers.help(ctx);
+      await safeReply(message, buildHelpSectionPayload(sectionKey));
     },
 
     async perks({ message }) {
@@ -741,10 +826,6 @@ export function createUtilityCommandHandlers({
           `Source: ${current.displayUrl}`
         ].join("\n")
       );
-    },
-
-    async np(ctx) {
-      return handlers.nowplaying(ctx);
     },
 
     async queue({ message }) {
@@ -934,10 +1015,38 @@ export function createUtilityCommandHandlers({
       const rawMemberCount = [guild.memberCount, guild.member_count, guild.approximate_member_count]
         .map((value) => Number(value))
         .find((value) => Number.isFinite(value) && value > 0);
-      const memberCount = Math.max(0, Number.isFinite(rawMemberCount) ? rawMemberCount : Number(guild.members?.size || 0));
+      let memberCount = Math.max(0, Number.isFinite(rawMemberCount) ? rawMemberCount : Number(guild.members?.size || 0));
 
-      const emojiCount = Math.max(0, Number(guild.emojis?.size || 0));
       const trackedMembers = await db.getLevelMemberCount(guild.id);
+
+      if (memberCount <= 5 && guild.client?.rest) {
+        try {
+          let fetchedMemberCount = 0;
+          let lastId = "0";
+          for (let i = 0; i < 50; i++) {
+            const chunk = await guild.client.rest.get(`/guilds/${guild.id}/members?limit=1000&after=${lastId}`);
+            if (!Array.isArray(chunk) || chunk.length === 0) break;
+            fetchedMemberCount += chunk.length;
+            lastId = chunk[chunk.length - 1].user?.id || chunk[chunk.length - 1].id;
+            if (chunk.length < 1000) break;
+          }
+          memberCount = Math.max(memberCount, fetchedMemberCount);
+        } catch {
+          // Best effort.
+        }
+      }
+      
+      memberCount = Math.max(memberCount, trackedMembers);
+
+      let emojiCount = Math.max(0, Number(guild.emojis?.size || 0));
+      if (emojiCount === 0 && typeof guild.fetchEmojis === "function") {
+        try {
+          const emojis = await guild.fetchEmojis();
+          emojiCount = Array.isArray(emojis) ? emojis.length : Math.max(0, Number(guild.emojis?.size || 0));
+        } catch {
+          // Best effort.
+        }
+      }
       const topEntry = (await db.listLevelLeaderboard(guild.id, 1, 0))[0] || null;
 
       const createdAtText = formatDateTimeUtc(resolveGuildCreatedAt(guild));
@@ -1068,10 +1177,6 @@ export function createUtilityCommandHandlers({
       );
     },
 
-    async level(ctx) {
-      return handlers.rank(ctx);
-    },
-
     async leaderboard({ message, args }) {
       const guild = await resolveGuildFromMessage(message);
       if (!guild) {
@@ -1079,38 +1184,66 @@ export function createUtilityCommandHandlers({
         return;
       }
 
+      const requestedPage = Number.parseInt(String(args[0] || "1"), 10);
+      const initialPage = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
       const pageSize = 10;
-      const trackedMembers = await db.getLevelMemberCount(guild.id);
-      if (trackedMembers === 0) {
-        await safeReply(message, "No leveling data yet.");
+
+      const loadPage = async (requestedBoardPage) => {
+        const trackedMembers = await db.getLevelMemberCount(guild.id);
+        const totalPages = Math.max(1, Math.ceil(Math.max(0, trackedMembers) / pageSize));
+        const page = Math.max(1, Math.min(Number(requestedBoardPage || 1), totalPages));
+        const offset = (page - 1) * pageSize;
+        const rows = await db.listLevelLeaderboard(guild.id, pageSize, offset);
+
+        return {
+          page,
+          totalPages,
+          payload: buildLeaderboardPayload({
+            rows,
+            page,
+            totalPages,
+            trackedMembers
+          })
+        };
+      };
+
+      await sendPaginatedBoard(message, loadPage, initialPage);
+    },
+
+    async activityboard({ message, args }) {
+      const guild = await resolveGuildFromMessage(message);
+      if (!guild) {
+        await safeReply(message, "This command only works in a server.");
         return;
       }
 
       const requestedPage = Number.parseInt(String(args[0] || "1"), 10);
-      const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
-      const totalPages = Math.max(1, Math.ceil(trackedMembers / pageSize));
-      if (page > totalPages) {
-        await safeReply(message, `No entries on that page. Try 1-${totalPages}.`);
-        return;
-      }
+      const initialPage = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+      const pageSize = 10;
 
-      const offset = (page - 1) * pageSize;
+      const loadPage = async (requestedBoardPage) => {
+        const trackedMembers = await db.getLevelMemberCount(guild.id);
+        const totalPages = Math.max(1, Math.ceil(Math.max(0, trackedMembers) / pageSize));
+        const page = Math.max(1, Math.min(Number(requestedBoardPage || 1), totalPages));
+        const offset = (page - 1) * pageSize;
+        const rows =
+          typeof db.listActivityLeaderboard === "function"
+            ? await db.listActivityLeaderboard(guild.id, pageSize, offset)
+            : [];
 
-      const rows = await db.listLevelLeaderboard(guild.id, pageSize, offset);
-      if (rows.length === 0) {
-        await safeReply(message, page === 1 ? "No leveling data yet." : "No entries on that page.");
-        return;
-      }
-
-      await safeReply(
-        message,
-        buildLeaderboardPayload({
-          rows,
+        return {
           page,
           totalPages,
-          trackedMembers
-        })
-      );
+          payload: buildActivityBoardPayload({
+            rows,
+            page,
+            totalPages,
+            trackedMembers
+          })
+        };
+      };
+
+      await sendPaginatedBoard(message, loadPage, initialPage);
     },
 
     async ask({ message, args }) {

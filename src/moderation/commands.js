@@ -348,7 +348,7 @@ export function createModerationCommandHandlers({
     },
 
     async purge({ message, args }) {
-      if (!(await requirePermission(message, PermissionFlags.ManageMessages, undefined, { skipTotp: true }))) {
+      if (!(await requirePermission(message, PermissionFlags.ManageMessages))) {
         return;
       }
 

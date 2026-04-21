@@ -290,19 +290,9 @@ export class BotDatabase {
         xp INTEGER NOT NULL DEFAULT 0,
         level INTEGER NOT NULL DEFAULT 0,
         message_count INTEGER NOT NULL DEFAULT 0,
+        voice_seconds INTEGER NOT NULL DEFAULT 0,
         last_xp_at TEXT,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY (guild_id, user_id)
-      );
-
-      CREATE TABLE IF NOT EXISTS staff_totp (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        secret_base32 TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        last_verified_at TEXT,
         PRIMARY KEY (guild_id, user_id)
       );
 
@@ -336,9 +326,6 @@ export class BotDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_member_levels_rank
       ON member_levels (guild_id, level DESC, xp DESC, message_count DESC, user_id ASC);
-
-      CREATE INDEX IF NOT EXISTS idx_staff_totp_last_verified
-      ON staff_totp (guild_id, last_verified_at);
 
       CREATE INDEX IF NOT EXISTS idx_command_toggles_lookup
       ON command_toggles (guild_id, command_name, enabled);
@@ -374,6 +361,7 @@ export class BotDatabase {
     this.ensureTableColumn("guild_config", "ticket_category_channel_id", "INTEGER");
     this.ensureTableColumn("guild_config", "ticket_support_role_id", "INTEGER");
     this.ensureTableColumn("guild_config", "ticket_welcome_template", "TEXT");
+    this.ensureTableColumn("member_levels", "voice_seconds", "INTEGER NOT NULL DEFAULT 0");
     this.db.exec("UPDATE guild_config SET leveling_enabled = 1 WHERE leveling_enabled IS NULL OR leveling_enabled != 1");
     this.db.exec("UPDATE guild_config SET raid_detection_enabled = 1 WHERE raid_detection_enabled IS NULL OR raid_detection_enabled != 1");
     this.db
@@ -709,123 +697,6 @@ export class BotDatabase {
     this.db.prepare(sql).run({ guild_id: guildId, ...normalized });
 
     return this.getGuildConfig(guildId);
-  }
-
-  getStaffTotpAuth(guildId, userId) {
-    const normalizedGuildId = toSnowflakeText(guildId);
-    const normalizedUserId = toSnowflakeText(userId);
-
-    if (!normalizedGuildId || !normalizedUserId) {
-      return null;
-    }
-
-    const row = this.db
-      .prepare(
-        `
-          SELECT guild_id, user_id, secret_base32, enabled, created_at, updated_at, last_verified_at
-          FROM staff_totp
-          WHERE guild_id = ? AND user_id = ?
-        `
-      )
-      .get(normalizedGuildId, normalizedUserId);
-
-    if (!row) {
-      return null;
-    }
-
-    return {
-      guild_id: toSnowflakeText(row.guild_id),
-      user_id: toSnowflakeText(row.user_id),
-      secret_base32: String(row.secret_base32 || ""),
-      enabled: toBoolean(row.enabled),
-      created_at: String(row.created_at || nowIso()),
-      updated_at: String(row.updated_at || nowIso()),
-      last_verified_at: row.last_verified_at == null ? null : String(row.last_verified_at)
-    };
-  }
-
-  upsertStaffTotpAuth({ guildId, userId, secretBase32, enabled = true, lastVerifiedAt = null }) {
-    const normalizedGuildId = toSnowflakeText(guildId);
-    const normalizedUserId = toSnowflakeText(userId);
-    const normalizedSecret = String(secretBase32 || "")
-      .trim()
-      .toUpperCase();
-
-    if (!normalizedGuildId || !normalizedUserId || !normalizedSecret) {
-      throw new Error("invalid totp enrollment payload");
-    }
-
-    const now = nowIso();
-    this.db
-      .prepare(
-        `
-          INSERT INTO staff_totp (
-            guild_id, user_id, secret_base32, enabled, created_at, updated_at, last_verified_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(guild_id, user_id)
-          DO UPDATE SET
-            secret_base32 = excluded.secret_base32,
-            enabled = excluded.enabled,
-            updated_at = excluded.updated_at,
-            last_verified_at = excluded.last_verified_at
-        `
-      )
-      .run(
-        normalizedGuildId,
-        normalizedUserId,
-        normalizedSecret,
-        enabled ? 1 : 0,
-        now,
-        now,
-        lastVerifiedAt == null ? null : String(lastVerifiedAt)
-      );
-
-    return this.getStaffTotpAuth(normalizedGuildId, normalizedUserId);
-  }
-
-  markStaffTotpVerified(guildId, userId, verifiedAt = null) {
-    const normalizedGuildId = toSnowflakeText(guildId);
-    const normalizedUserId = toSnowflakeText(userId);
-
-    if (!normalizedGuildId || !normalizedUserId) {
-      return null;
-    }
-
-    const when = verifiedAt == null ? nowIso() : String(verifiedAt);
-    const now = nowIso();
-
-    this.db
-      .prepare(
-        `
-          UPDATE staff_totp
-          SET enabled = 1, last_verified_at = ?, updated_at = ?
-          WHERE guild_id = ? AND user_id = ?
-        `
-      )
-      .run(when, now, normalizedGuildId, normalizedUserId);
-
-    return this.getStaffTotpAuth(normalizedGuildId, normalizedUserId);
-  }
-
-  clearStaffTotpVerification(guildId, userId) {
-    const normalizedGuildId = toSnowflakeText(guildId);
-    const normalizedUserId = toSnowflakeText(userId);
-
-    if (!normalizedGuildId || !normalizedUserId) {
-      return null;
-    }
-
-    this.db
-      .prepare(
-        `
-          UPDATE staff_totp
-          SET last_verified_at = NULL, updated_at = ?
-          WHERE guild_id = ? AND user_id = ?
-        `
-      )
-      .run(nowIso(), normalizedGuildId, normalizedUserId);
-
-    return this.getStaffTotpAuth(normalizedGuildId, normalizedUserId);
   }
 
   getWarningCount(guildId, userId) {
@@ -1393,6 +1264,48 @@ export class BotDatabase {
         progress_percent: progress.progressPercent
       };
     });
+  }
+
+  addVoiceTime(guildId, userId, seconds) {
+    this.ensureMemberLevelRow(guildId, userId);
+
+    const amount = Math.max(0, toInteger(seconds, 0));
+    if (amount <= 0) return;
+
+    this.db
+      .prepare(
+        `
+          UPDATE member_levels
+          SET voice_seconds = voice_seconds + ?, updated_at = ?
+          WHERE guild_id = ? AND user_id = ?
+        `
+      )
+      .run(amount, nowIso(), guildId, userId);
+  }
+
+  listActivityLeaderboard(guildId, limit = 10, offset = 0) {
+    const normalizedLimit = Math.max(1, Math.min(toInteger(limit, 10), 50));
+    const normalizedOffset = Math.max(0, toInteger(offset, 0));
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT user_id, message_count, voice_seconds, updated_at
+          FROM member_levels
+          WHERE guild_id = ?
+          ORDER BY voice_seconds DESC, message_count DESC, user_id ASC
+          LIMIT ? OFFSET ?
+        `
+      )
+      .all(guildId, normalizedLimit, normalizedOffset);
+
+    return rows.map((row, index) => ({
+      rank: normalizedOffset + index + 1,
+      user_id: toSnowflakeText(row.user_id),
+      message_count: Math.max(0, toInteger(row.message_count, 0)),
+      voice_seconds: Math.max(0, toInteger(row.voice_seconds, 0)),
+      updated_at: row.updated_at == null ? null : String(row.updated_at)
+    }));
   }
 
   getOpenTicketForUser(guildId, userId) {
